@@ -1,0 +1,27 @@
+#!/bin/sh
+# ZS op-guard — PATH shadow for the 1Password CLI (DEFAULT-DENY for autonomous use).
+#
+# The `op` CLI must not be called by an agent ACCIDENTALLY / AUTONOMOUSLY (CLAUDE.md rule;
+# ZS Vault — `zsvault get <id>` — is the secrets source of truth). This shim sits earlier
+# on PATH than the real binary, so a bare / reflexive `op ...` from a tool or shell that
+# resolves `op` through PATH refuses here. DELIBERATE use is allowed via a one-shot opt-in
+# token an agent won't type on its own (use it as a PREFIX — do NOT `export` it):
+#     ZS_ALLOW_OP=1 op item get "GitHub"
+# which passes straight through to the real binary. The real binary is left intact at
+# /opt/homebrew/bin/op (also reachable by absolute path — a documented residual). Every
+# decision is appended to ~/.config/zs-ops/op-guard.log (timestamp + ALLOW/DENY + the op
+# subcommand verb only — never the full args, which can name a secret). Reversible: delete
+# this file and the "ZS op-guard" PATH lines in ~/.zshenv, ~/.zshrc, ~/.zprofile.
+REAL=/opt/homebrew/bin/op
+LOG="$HOME/.config/zs-ops/op-guard.log"
+_ts() { date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null; }
+if [ "${ZS_ALLOW_OP:-}" = "1" ]; then
+  { printf '%s ALLOW-OVERRIDE op %s\n' "$(_ts)" "${1:-}" >> "$LOG"; } 2>/dev/null
+  [ -x "$REAL" ] && exec "$REAL" "$@"
+  echo "op-guard: ZS_ALLOW_OP=1 set but real op not found/executable at $REAL" >&2
+  exit 127
+fi
+{ printf '%s DENY op %s\n' "$(_ts)" "${1:-}" >> "$LOG"; } 2>/dev/null
+echo "BLOCKED: 'op' / 1Password CLI is default-denied for autonomous use (CLAUDE.md rule)." >&2
+echo "Deliberate use: prefix with ZS_ALLOW_OP=1 (one-shot, do NOT export). Secrets SoT: ZS Vault ('zsvault get <id>')." >&2
+exit 1
