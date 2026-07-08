@@ -40,6 +40,7 @@ EXPIRE_DAYS = _env_int("INBOX_EXPIRE_DAYS", 14)
 INBOX_INGEST_CAP = _env_int("INBOX_INGEST_CAP", 15)
 NOTEBOOKLM = HOME / "bin/notebooklm"
 NOTEBOOKLM_TIMEOUT_S = 120
+MARKITDOWN = HOME / ".local/bin/markitdown"  # NotebookLM rejects raw .html uploads; convert to .md first
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".webp"}
 SCREENSHOT_RE = re.compile(r"(screenshot|screen shot|qa-|_preview)", re.IGNORECASE)
@@ -180,7 +181,36 @@ def _write_log(lines: list[str], stamp: str) -> None:
         lines.append(f"{stamp} WARN log write failed {LOG}: {exc}")
 
 
+def _html_as_markdown(path: Path) -> tuple[Path | None, str | None]:
+    """Convert an .html file to a temp .md for upload. Returns (md_path, error)."""
+    if not MARKITDOWN.is_file():
+        return None, f"markitdown missing at {MARKITDOWN}"
+    md_path = path.with_suffix(".zs-ingest.md")
+    try:
+        proc = subprocess.run(
+            [str(MARKITDOWN), str(path)],
+            stdout=md_path.open("w"),
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=NOTEBOOKLM_TIMEOUT_S,
+        )
+    except (subprocess.TimeoutExpired, OSError) as exc:
+        md_path.unlink(missing_ok=True)
+        return None, f"markitdown: {exc}"
+    if proc.returncode != 0 or not md_path.stat().st_size:
+        md_path.unlink(missing_ok=True)
+        return None, f"markitdown rc={proc.returncode}"
+    return md_path, None
+
+
 def _ingest_source(path: Path) -> str | None:
+    upload = path
+    temp_md: Path | None = None
+    if path.suffix.lower() == ".html":
+        temp_md, err = _html_as_markdown(path)
+        if err:
+            return err
+        upload = temp_md
     cmd = [
         str(NOTEBOOKLM),
         "--quiet",
@@ -190,7 +220,7 @@ def _ingest_source(path: Path) -> str | None:
         "file",
         "--title",
         path.stem,
-        str(path),
+        str(upload),
     ]
     try:
         proc = subprocess.run(
@@ -204,6 +234,9 @@ def _ingest_source(path: Path) -> str | None:
         return f"timeout after {NOTEBOOKLM_TIMEOUT_S}s"
     except OSError as exc:
         return str(exc)
+    finally:
+        if temp_md is not None:
+            temp_md.unlink(missing_ok=True)
     if proc.returncode == 0:
         return None
     detail = (proc.stderr or "").strip().splitlines()
