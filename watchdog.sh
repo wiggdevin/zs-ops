@@ -19,6 +19,8 @@ WATCHDOG_LOG="${WATCHDOG_LOG:-$HOME/Library/Logs/zs-watchdog.jsonl}"
 MEMORY_API="${MEMORY_API:-http://localhost:8765}"
 OLLAMA_API="${OLLAMA_API:-http://localhost:11434}"
 BACKUP_DIR="${BACKUP_DIR:-$HOME/Backups/zs-mem0-backups}"
+# iCloud mirror written by zs-memory/ops/backup-zs-memory.sh (default since 2026-07-09)
+MIRROR_BACKUP_DIR="${MIRROR_BACKUP_DIR:-$HOME/Library/Mobile Documents/com~apple~CloudDocs/Backups/zs-mem0-backups}"
 BACKUP_MAX_AGE_HOURS="${BACKUP_MAX_AGE_HOURS:-26}"
 DREAM_LABEL="${DREAM_LABEL:-com.zs.dream}"
 DREAM_ALERT_STAMP_DIR="${DREAM_ALERT_STAMP_DIR:-/tmp}"
@@ -104,6 +106,23 @@ check_backup_freshness() {
   local age_h=$(( ( $(date +%s) - $(stat -f %m "$newest") ) / 3600 ))
   if [ "$age_h" -le "$BACKUP_MAX_AGE_HOURS" ]; then event backup healthy none
   else event backup stale "newest=${age_h}h"; fi
+}
+
+check_mirror_freshness() { # same contract as check_backup_freshness, for the off-box mirror
+  # Only count mirror files that pass a quick integrity stat — size > 0 and not
+  # a dataless File Provider placeholder — so a corrupt/evicted newest file
+  # can't mask older valid mirrors as "fresh".
+  local newest="" f
+  while IFS= read -r f; do
+    [ -s "$f" ] || continue
+    ls -lO "$f" 2>/dev/null | grep -q dataless && continue
+    newest="$f"
+    break
+  done < <(ls -t "$MIRROR_BACKUP_DIR"/zs-memory-backup-*.db.gz 2>/dev/null)
+  if [ -z "$newest" ]; then event backup-mirror missing none; return; fi
+  local age_h=$(( ( $(date +%s) - $(stat -f %m "$newest") ) / 3600 ))
+  if [ "$age_h" -le "$BACKUP_MAX_AGE_HOURS" ]; then event backup-mirror healthy none
+  else event backup-mirror stale "newest=${age_h}h"; fi
 }
 
 # The nightly dream pass (com.zs.dream, 04:00) exits non-zero when a consolidation
@@ -269,6 +288,7 @@ main() {
   check_zs_memory
   check_ollama
   check_backup_freshness
+  check_mirror_freshness
   check_dream
   check_scheduled_jobs
 
