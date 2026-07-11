@@ -242,12 +242,16 @@ check_launchd_jobs() {
     flag_scheduled_failure launchd "$label" "exit=$status"
   done < <(printf '%s\n' "$rows" | awk '
     $3 ~ /^(com\.zs\.|com\.zerosum|ai\.hermes\.)/ &&
+    $1 == "-" &&
     $2 ~ /^[0-9]+$/ &&
     ($2 + 0) > 0 &&
     ($2 + 0) != 143 {
       print $3 "\t" $2
     }
   ')
+  # $1 == "-": a KeepAlive daemon that is RUNNING still reports its last
+  # (possibly nonzero) exit status in column 2 forever — e.g. a healthy
+  # gateway that once lost the network. Only flag jobs that are down.
 }
 
 check_hermes_cron_jobs() {
