@@ -119,6 +119,13 @@ check_mirror_freshness() { # same contract as check_backup_freshness, for the of
     newest="$f"
     break
   done < <(ls -t "$MIRROR_BACKUP_DIR"/zs-memory-backup-*.db.gz 2>/dev/null)
+  # TCC blocks dir enumeration of Mobile Documents for launchd-context bash
+  # (direct-path stat still works) — fall back to the basename stamped by
+  # backup-zs-memory.sh after its last verified mirror.
+  if [ -z "$newest" ] && [ -r "$BACKUP_DIR/.mirror-stamp" ]; then
+    f="$MIRROR_BACKUP_DIR/$(head -1 "$BACKUP_DIR/.mirror-stamp")"
+    if [ -s "$f" ] && ! ls -lO "$f" 2>/dev/null | grep -q dataless; then newest="$f"; fi
+  fi
   if [ -z "$newest" ]; then event backup-mirror missing none; return; fi
   local age_h=$(( ( $(date +%s) - $(stat -f %m "$newest") ) / 3600 ))
   if [ "$age_h" -le "$BACKUP_MAX_AGE_HOURS" ]; then event backup-mirror healthy none
