@@ -21,7 +21,10 @@ OLLAMA_API="${OLLAMA_API:-http://localhost:11434}"
 offline=0
 ok()  { printf '  ✓ %s\n' "$1"; }
 bad() { printf '  ✗ %s\n' "$1"; offline=1; }
-http_ok() { curl -fsS --max-time 3 "$1" >/dev/null 2>&1; }
+# 8s, not 3s: /health can legitimately spend ~6s (bounded store-lock wait +
+# a 5s embedder probe on TTL expiry). A 3s budget was tighter than the
+# service's own allowance, so a healthy zs-memory intermittently reported ✗.
+http_ok() { curl -fsS --max-time "${2:-8}" "$1" >/dev/null 2>&1; }
 
 echo "── memory stack pre-flight ──"
 
