@@ -81,11 +81,46 @@ check_colima() {
   else event colima down heal-failed; fi
 }
 
+# zs-memory restart policy. `kickstart -k` SIGTERMs the running process, so a
+# single slow /health used to cost a live restart (and aborted every in-flight
+# request). Two things changed:
+#   1. Restart only after ZS_MEMORY_FAIL_THRESHOLD *consecutive* failed sweeps.
+#      One slow probe is not a dead service; a genuinely dead one still gets
+#      healed on the next sweep (~5 min later).
+#   2. Read the BODY. /health deliberately stays 200 when the embedder is down
+#      (200 avoids kickstart flapping on an Ollama blip) — so a 2xx-only check
+#      could never see embedder failure. "degraded" is now surfaced as its own
+#      event and still never restarts.
+ZS_MEMORY_FAIL_STATE="${ZS_MEMORY_FAIL_STATE:-$HOME/Library/Logs/zs-watchdog-zs-memory-fails}"
+ZS_MEMORY_FAIL_THRESHOLD="${ZS_MEMORY_FAIL_THRESHOLD:-2}"
+# Above the service's own worst case: bounded ping lock wait (1s) + embedder
+# probe (5s). The old 5s left zero margin and timed out on a healthy service.
+ZS_MEMORY_HEALTH_TIMEOUT="${ZS_MEMORY_HEALTH_TIMEOUT:-8}"
+
 check_zs_memory() {
-  if http_ok "$MEMORY_API/health"; then event zs-memory healthy none; return; fi
+  local body
+  if body="$(curl -fsS --max-time "$ZS_MEMORY_HEALTH_TIMEOUT" "$MEMORY_API/health" 2>/dev/null)"; then
+    rm -f "$ZS_MEMORY_FAIL_STATE"
+    case "$body" in
+      *degraded*) event zs-memory degraded no-restart ;;
+      *)          event zs-memory healthy none ;;
+    esac
+    return
+  fi
+
+  local n
+  n=$(( $(cat "$ZS_MEMORY_FAIL_STATE" 2>/dev/null || echo 0) + 1 ))
+  mkdir -p "$(dirname "$ZS_MEMORY_FAIL_STATE")" 2>/dev/null
+  printf '%s' "$n" > "$ZS_MEMORY_FAIL_STATE"
+  if [ "$n" -lt "$ZS_MEMORY_FAIL_THRESHOLD" ]; then
+    event zs-memory unreachable "no-restart-yet-$n-of-$ZS_MEMORY_FAIL_THRESHOLD"
+    return
+  fi
+
   heal zs-memory-kickstart launchctl kickstart -k "gui/$(id -u)/com.zs.memory"
   sleep 3
-  if http_ok "$MEMORY_API/health"; then event zs-memory healthy restarted
+  if http_ok "$MEMORY_API/health"; then
+    rm -f "$ZS_MEMORY_FAIL_STATE"; event zs-memory healthy restarted
   else event zs-memory down heal-failed; fi
 }
 
@@ -317,4 +352,6 @@ main() {
   fi
   printf '\033[1;32m✓ memory stack healthy\033[0m\n' >&2
 }
-main "$@"
+# Sourceable for tests (tests/watchdog-zs-memory-tests.sh calls the check
+# functions directly); still runs normally when executed by launchd.
+if [ "${BASH_SOURCE[0]}" = "${0}" ]; then main "$@"; fi
