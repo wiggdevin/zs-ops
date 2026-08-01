@@ -7,8 +7,11 @@
 # context does not inherit the shell PATH (mise shims).
 set -euo pipefail
 
+# Scoped `claude` token, matching every other MCP client. The primary token
+# bypasses scope checks entirely and can target any user_id including
+# delete_all_memories — no interactive client should hold it.
 if [ -z "${ZS_MEMORY_TOKEN:-}" ]; then
-  ZS_MEMORY_TOKEN="$(/Users/zero-suminc./bin/zsvault get zs_memory_token)"
+  ZS_MEMORY_TOKEN="$(/Users/zero-suminc./bin/zsvault get zs_memory_token_claude)"
 fi
 export ZS_MEMORY_TOKEN
 

@@ -117,7 +117,11 @@ def storage_section():
         "~/Library/Caches": f"{HOME}/Library/Caches",
         "~/Library/Developer (Xcode)": f"{HOME}/Library/Developer",
         "~/.ollama (models)": f"{HOME}/.ollama",
-        "~/.colima (docker VM)": f"{HOME}/.colima",
+        # 2026-08-01: the "~/.colima (docker VM)" entry was dropped here when the
+        # runtime moved to OrbStack. It is deliberately NOT replaced by an
+        # OrbStack entry: this section is for HIDDEN dirs the top-level scan
+        # skips, and OrbStack keeps its disk image in ~/OrbStack (visible, so
+        # already ranked above) rather than ~/.orbstack (a 300K run dir).
         "~/.npm": f"{HOME}/.npm",
         "pnpm store": f"{HOME}/Library/pnpm",
         "uv cache": f"{HOME}/Library/Caches/uv",
@@ -134,7 +138,10 @@ def storage_section():
 
 def memory_section():
     lines = ["## Memory (zs-memory)", ""]
-    token = os.environ.get("ZS_MEMORY_TOKEN") or run([f"{HOME}/bin/zsvault", "get", "zs_memory_token"])
+    # Scoped `automation` token — this section only counts memories, so it has
+    # no business holding the primary token's any-namespace/any-delete authority.
+    token = os.environ.get("ZS_MEMORY_TOKEN") or run(
+        [f"{HOME}/bin/zsvault", "get", "zs_memory_token_automation"])
     total = "?"
     if token:
         try:
