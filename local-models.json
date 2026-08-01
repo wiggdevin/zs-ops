@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "updated": "2026-07-15",
+  "scope": "current macOS user on loopback only",
+  "providers": {
+    "dspark": {
+      "type": "openai-compatible",
+      "base_url": "http://127.0.0.1:8080/v1",
+      "health_url": "http://127.0.0.1:8080/health",
+      "model": "Qwen3-8B-8bit",
+      "service": "com.zs.dspark",
+      "launcher": "~/bin/mlx-dspark-server",
+      "task_runner": "~/bin/dspark-task",
+      "autostart": false,
+      "measured_tokens_per_second": 32.2,
+      "measured_baseline_tokens_per_second": 21.0,
+      "intended_uses": [
+        "drafting",
+        "summarization",
+        "structured extraction",
+        "classification",
+        "code drafts",
+        "bounded prompt iteration"
+      ],
+      "guardrails": [
+        "not a default or fallback model",
+        "no arbitrary shell or project-write authority",
+        "start on demand and stop after background work",
+        "keep the stronger Ollama Qwen3 30B-A3B model separate"
+      ]
+    }
+  }
+}
