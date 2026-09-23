@@ -88,30 +88,71 @@ def memory_state():
     }
 
 
+def _ps(fmt):
+    """{pid: last_field} for a ps format whose final column may contain spaces."""
+    rows = {}
+    for line in run(["/bin/ps", "-Ao", fmt]).splitlines():
+        pid, _, rest = line.strip().partition(" ")
+        if pid.isdigit() and rest.strip():
+            rows[int(pid)] = rest.strip()
+    return rows
+
+
 def processes():
-    """[(rss_kb, pid, ppid, command)] for every process, largest first."""
-    out = run(["/bin/ps", "-Ao", "rss=,pid=,ppid=,command="])
+    """[(rss_kb, pid, ppid, comm, command)] for every process, largest first.
+
+    comm and command come from separate ps calls and are joined on pid. One call
+    cannot carry both: each has a variable width and may contain spaces, so only
+    the final column survives unambiguously. Executable paths with spaces are not
+    an edge case here, they are the thing being watched -- Claude Code lives under
+    "Library/Application Support", which naive argv splitting shreds into
+    "Application".
+    """
+    comms = _ps("pid=,comm=")
+    commands = _ps("pid=,command=")
+
     rows = []
-    for line in out.splitlines():
-        parts = line.split(None, 3)
-        if len(parts) < 4 or not parts[0].isdigit():
+    for line in run(["/bin/ps", "-Ao", "pid=,ppid=,rss="]).splitlines():
+        parts = line.split()
+        if len(parts) != 3 or not all(p.isdigit() for p in parts):
             continue
-        rows.append((int(parts[0]), int(parts[1]), int(parts[2]), parts[3]))
+        pid, ppid, rss = (int(p) for p in parts)
+        rows.append((rss, pid, ppid, comms.get(pid, ""), commands.get(pid, "")))
     rows.sort(reverse=True)
     return rows
 
 
-def short_name(command):
-    """argv[0] basename — the thing you'd group a leak by."""
-    argv0 = command.split(None, 1)[0]
-    return argv0.rsplit("/", 1)[-1] or argv0
+INTERPRETERS = ("python", "python3", "node", "ruby", "perl", "sh", "bash", "zsh")
+
+
+def short_name(comm, command):
+    """The name you would actually group a leak by.
+
+    The executable's basename, except for interpreter-led commands, where it
+    resolves to the script instead. This matters more than it looks: the
+    2026-07-30 leak was 38 copies of `/usr/bin/python3 .../run_server.py`, which
+    by executable alone all collapse into one generic `python3` bucket alongside
+    every unrelated python process, and the duplicate MCP servers likewise vanish
+    into `node`.
+    """
+    exe = (comm or command).rsplit("/", 1)[-1].strip()
+    if exe not in INTERPRETERS:
+        return exe or "unknown"
+    for arg in command.split()[1:]:
+        if arg.startswith("-"):
+            continue
+        script = arg.rsplit("/", 1)[-1]
+        if script:
+            return script
+        break
+    return exe or "unknown"
 
 
 def build_snapshot(mem, procs, reasons):
     by_name_rss = defaultdict(int)
     by_name_count = defaultdict(int)
-    for rss, _pid, _ppid, command in procs:
-        name = short_name(command)
+    for rss, _pid, _ppid, comm, command in procs:
+        name = short_name(comm, command)
         by_name_rss[name] += rss
         by_name_count[name] += 1
 
@@ -130,8 +171,14 @@ def build_snapshot(mem, procs, reasons):
         # Full command line kept: the 2026-07-30 diagnosis turned on spotting
         # which parent spawned the duplicates, which argv0 alone would have lost.
         "top_by_rss": [
-            {"rss_mb": rss // 1024, "pid": pid, "ppid": ppid, "command": command[:300]}
-            for rss, pid, ppid, command in procs[:40]
+            {
+                "rss_mb": rss // 1024,
+                "pid": pid,
+                "ppid": ppid,
+                "name": short_name(comm, command),
+                "command": command[:300],
+            }
+            for rss, pid, ppid, comm, command in procs[:40]
         ],
         "by_name": sorted(
             (

@@ -17,6 +17,7 @@ set -uo pipefail
 
 MEMORY_API="${MEMORY_API:-http://localhost:8765}"
 OLLAMA_API="${OLLAMA_API:-http://localhost:11434}"
+OMLX_API="${OMLX_API:-http://127.0.0.1:8000}"
 
 offline=0
 ok()  { printf '  ✓ %s\n' "$1"; }
@@ -30,35 +31,11 @@ echo "── memory stack pre-flight ──"
 
 if http_ok "$MEMORY_API/health"; then ok "zs-memory :8765"
 else bad "zs-memory :8765 (launchctl kickstart -k gui/\$(id -u)/com.zs.memory)"; fi
-if http_ok "$OLLAMA_API/api/tags"; then ok "ollama :11434"
-else bad "ollama :11434 (launchctl kickstart -k gui/\$(id -u)/com.zs.ollama)"; fi
-
-# Watchdog liveness (2026-08-01). com.zs.watchdog stamps this file at the end of
-# every completed 5-minute sweep. A watchdog that has died or hung cannot report
-# that itself — it emits no event and sets no exit status — so the ONLY evidence
-# is the stamp going stale. Checked here because a session start is the most
-# frequent thing on this box; zs-os-doctor only looks once a week. 900s = three
-# missed sweeps, so one slow run does not cry wolf. Advisory, never blocks.
-# Sleep correction: launchd does not fire StartInterval timers while the machine
-# sleeps, so right after a lid-close the stamp is legitimately hours old until the
-# catch-up sweep lands. Only judge it once the machine has been AWAKE past the
-# window, otherwise every morning starts with a false alarm. The kern.waketime
-# pattern must stay ^-anchored — unanchored it matches the trailing `usec` field.
-# (~/bin/system-healthcheck carries the same logic; keep the two in step.)
-# A NEGATIVE age (stamp in the future — clock rollback, NTP correction, bad
-# mtime) must not read as "fresh"; `age < 900` alone would pass forever.
-WATCHDOG_HEARTBEAT="${WATCHDOG_HEARTBEAT:-$HOME/Library/Logs/zs-watchdog-heartbeat}"
-_wd_now=$(date +%s)
-_wd_woke=$(sysctl -n kern.waketime 2>/dev/null | sed -n 's/^{ sec = \([0-9]*\).*/\1/p')
-_wd_awake=$(( _wd_now - ${_wd_woke:-0} ))
-_wd_age=$(( _wd_now - $(stat -f %m "$WATCHDOG_HEARTBEAT" 2>/dev/null || echo 0) ))
-if [ -n "$_wd_woke" ] && [ "$_wd_awake" -ge 0 ] && [ "$_wd_awake" -lt 900 ]; then
-  ok "watchdog sweep (just woke, not yet due)"
-elif [ -r "$WATCHDOG_HEARTBEAT" ] && [ "$_wd_age" -ge 0 ] && [ "$_wd_age" -lt 900 ]; then
-  ok "watchdog sweep <15m"
-else
-  printf '  ⚠ %s\n' "watchdog stale/absent — health monitoring may be DOWN (launchctl kickstart -k gui/\$(id -u)/com.zs.watchdog)"
-fi
+# oMLX is opt-in and on-demand (codex-omlx / claude-omlx start it), so idle is not a fault.
+if http_ok "$OMLX_API/health" 5; then ok "oMLX :8000 local inference (running)"
+else ok "oMLX :8000 idle (starts on demand via codex-omlx / claude-omlx)"; fi
+if http_ok "$OLLAMA_API/api/tags"; then ok "ollama :11434 compatibility embeddings"
+else bad "ollama :11434 embeddings (launchctl kickstart -k gui/\$(id -u)/com.zs.ollama)"; fi
 
 # Self-heal the op-guard PATH shim (default-deny for the 1Password CLI). The shim shadows
 # `op` on PATH so by-name invocations refuse unless ZS_ALLOW_OP=1; the PATH wiring lives in

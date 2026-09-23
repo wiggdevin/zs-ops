@@ -1,8 +1,36 @@
 {
   "version": 1,
-  "updated": "2026-07-15",
+  "updated": "2026-08-17",
   "scope": "current macOS user on loopback only",
   "providers": {
+    "omlx": {
+      "type": "openai-and-anthropic-compatible",
+      "base_url": "http://127.0.0.1:8000/v1",
+      "health_url": "http://127.0.0.1:8000/health",
+      "model": "mlx-community--Qwen3-8B-8bit",
+      "service": "oMLX.app managed server",
+      "launcher": "~/.omlx/bin/omlx",
+      "codex_launcher": "~/bin/codex-omlx",
+      "claude_launcher": "~/bin/claude-omlx",
+      "autostart": true,
+      "measured_tokens_per_second": 25.2,
+      "intended_uses": [
+        "private local drafting",
+        "summarization",
+        "structured extraction",
+        "bounded code assistance",
+        "OpenAI-compatible tool calling",
+        "Anthropic-compatible agent sessions"
+      ],
+      "guardrails": [
+        "loopback only",
+        "SSD cache capped at 8 GB",
+        "launch through codex-omlx or claude-omlx so normal OAuth lanes remain untouched",
+        "not the zs-memory embedder",
+        "Ollama remains required for qwen3-embedding:8b compatibility",
+        "Qwen3 30B oMLX promotion requires a completed download and measured parity benchmark"
+      ]
+    },
     "dspark": {
       "type": "openai-compatible",
       "base_url": "http://127.0.0.1:8080/v1",
@@ -26,7 +54,7 @@
         "not a default or fallback model",
         "no arbitrary shell or project-write authority",
         "start on demand and stop after background work",
-        "keep the stronger Ollama Qwen3 30B-A3B model separate"
+        "keep the stronger Ollama Qwen3 30B-A3B model and oMLX agent lane separate"
       ]
     }
   }

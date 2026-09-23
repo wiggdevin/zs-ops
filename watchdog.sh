@@ -33,6 +33,10 @@ HERMES_ENV="${HERMES_ENV:-$HOME/.hermes/.env}"
 DRY_RUN=0
 SCHED_ONLY=0
 REPORT_ONLY=0
+# The memory stack is native launchd now and must not wake a container runtime.
+# Container projects are started explicitly by the project that needs them.
+# Opt back into the legacy runtime monitoring only for a deliberate session.
+WATCHDOG_CHECK_CONTAINER_RUNTIME="${WATCHDOG_CHECK_CONTAINER_RUNTIME:-0}"
 # Stamped once per COMPLETED full sweep. This is the only artefact that can
 # distinguish "the watchdog ran and everything is broken" from "the watchdog
 # itself never ran" — an exit status cannot, because a sweep that never starts
@@ -512,8 +516,10 @@ main() {
     return
   fi
 
-  if command -v orb >/dev/null 2>&1; then check_orbstack; else event orbstack absent none; fi
-  if command -v docker >/dev/null 2>&1; then check_docker_engine; fi
+  if [ "$WATCHDOG_CHECK_CONTAINER_RUNTIME" -eq 1 ]; then
+    if command -v orb >/dev/null 2>&1; then check_orbstack; else event orbstack absent none; fi
+    if command -v docker >/dev/null 2>&1; then check_docker_engine; fi
+  fi
   check_zs_memory
   check_ollama
   check_backup_freshness
