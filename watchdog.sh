@@ -174,8 +174,9 @@ check_liveness_monitor() {
 # Colima is deliberately NOT healed any more: its only stated reason to exist was
 # zs-ai-os-postgres, which is long gone, and the 5-minute heal kept resurrecting an
 # 8-CPU/16GB VM with nothing running in it. The Colima VM has since been DELETED
-# (`colima delete --data`, 41GB reclaimed); its volumes are archived under
-# ~/Backups/colima/. Never re-add a colima heal here — with no
+# (`colima delete --data`, 41GB reclaimed). NOTE (verified 2026-09-22): no
+# ~/Backups/colima/ archive exists, and a new colima VM was created 2026-09-13
+# (~/.colima, 8.7 GB datadisk, stopped). Never re-add a colima heal here — with no
 # instance left, `colima start` does not restore anything, it provisions a brand
 # new empty VM.
 # Every orb call is bounded: a wedged OrbStack IPC channel makes `orb status`
