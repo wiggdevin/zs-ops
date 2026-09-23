@@ -7,7 +7,7 @@ on:
 
 jobs:
   check:
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-latest  # Blacksmith is installed on the ZeroSum-Solutions org only
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
