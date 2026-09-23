@@ -3,7 +3,7 @@ import importlib.util, os, tempfile, time
 from pathlib import Path
 
 spec = importlib.util.spec_from_file_location(
-    "s", str(Path.home() / ".config/zs-ops/inbox_sweep.py"))
+    "s", str(Path(__file__).resolve().parents[1] / "inbox_sweep.py"))
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 
