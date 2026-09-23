@@ -1,0 +1,26 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Shell syntax
+        run: for f in *.sh lib/*.sh tests/*.sh; do bash -n "$f" && echo "ok $f"; done
+      - name: Python syntax
+        run: python -m py_compile *.py
+      - name: JSON config
+        run: for f in *.json; do python -m json.tool "$f" > /dev/null && echo "ok $f"; done
+      - name: Portable tests
+        run: python tests/test_inbox_sweep_reap.py
+# The watchdog suites (tests/watchdog-*-tests.sh) need macOS launchctl and BSD stat;
+# run them locally before landing: for t in tests/watchdog-*-tests.sh; do bash "$t"; done
