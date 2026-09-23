@@ -127,7 +127,7 @@ GIT_DESTRUCTIVE_PATTERNS=(
   "git checkout \."
   "git restore \."
   "push --force"
-  "push([[:space:]]+[^[:space:]]+)*[[:space:]]+-[a-zA-Z]*f[a-zA-Z]*([[:space:]]|$)"
+  "push([[:space:]]+[^[:space:];&|]+)*[[:space:]]+-[a-zA-Z]*f[a-zA-Z]*([[:space:];&|]|$)"
   "reset --hard"
 )
 
