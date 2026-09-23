@@ -1,0 +1,59 @@
+{
+  "name": "action-item-extractor",
+  "goal": "Extract only explicitly assigned action items from meeting notes.",
+  "output_contract": {
+    "action_items": [
+      {
+        "owner": "string",
+        "task": "string",
+        "deadline": "string or null",
+        "priority": "high, medium, or low"
+      }
+    ]
+  },
+  "base_prompt": "From the notes, return a JSON list of tasks.",
+  "training_cases": [
+    {
+      "name": "two-actions-and-context",
+      "input": "Maya will send the revised budget by Friday. Leo should schedule the kickoff tomorrow. Background: the launch moved to August.",
+      "checks": [
+        {"path": "action_items", "op": "length", "value": 2},
+        {"path": "action_items.0.owner", "op": "equals", "value": "Maya"},
+        {"path": "action_items.0.task", "op": "contains", "value": "budget"},
+        {"path": "action_items.0.deadline", "op": "contains", "value": "Friday"},
+        {"path": "action_items.1.owner", "op": "equals", "value": "Leo"},
+        {"path": "action_items.1.task", "op": "contains", "value": "kickoff"},
+        {"path": "action_items.1.deadline", "op": "contains", "value": "tomorrow"}
+      ]
+    },
+    {
+      "name": "no-actions",
+      "input": "No tasks were assigned. The team discussed possible brand colors and reviewed last month's metrics.",
+      "checks": [
+        {"path": "action_items", "op": "length", "value": 0}
+      ]
+    },
+    {
+      "name": "preserve-date-without-inventing-year",
+      "input": "Priya needs to email the client on July 20. The client prefers blue, which is context rather than an assignment.",
+      "checks": [
+        {"path": "action_items", "op": "length", "value": 1},
+        {"path": "action_items.0.owner", "op": "equals", "value": "Priya"},
+        {"path": "action_items.0.task", "op": "contains", "value": "email"},
+        {"path": "action_items.0.deadline", "op": "contains", "value": "July 20"}
+      ]
+    }
+  ],
+  "holdout_cases": [
+    {
+      "name": "fresh-date-and-context",
+      "input": "Omar will deliver the launch brief on September 3. The team also discussed a green color palette, but nobody owns that discussion.",
+      "checks": [
+        {"path": "action_items", "op": "length", "value": 1},
+        {"path": "action_items.0.owner", "op": "equals", "value": "Omar"},
+        {"path": "action_items.0.task", "op": "contains", "value": "brief"},
+        {"path": "action_items.0.deadline", "op": "contains", "value": "September 3"}
+      ]
+    }
+  ]
+}

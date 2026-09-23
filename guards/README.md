@@ -71,11 +71,11 @@ Cursor, in `~/.cursor/hooks.json`:
 }
 ```
 
-Antigravity, in `.agents/hooks.json`:
+Antigravity global registration belongs in `~/.gemini/config/hooks.json` (the shared path used by the CLI backend). Do not keep the global guard in the legacy `~/.gemini/hooks.json`: Antigravity CLI 1.1.11 can list/load that legacy definition without dispatching it at the real tool boundary. Use `<workspace>/.agents/hooks.json` only for intentionally workspace-local hooks.
 
 ```json
 {
-  "dangerous-command": {
+  "zs-dangerous-command": {
     "PreToolUse": [
       {
         "matcher": "run_command",

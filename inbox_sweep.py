@@ -10,8 +10,12 @@ Conservative by design (reorg plan 2026-06-10, ~/.claude/plans/i-would-like-to-w
   - Routing: .html→html · .md→notes · .pdf→pdfs · screenshot-named images→screenshots,
     other images→misc · .json/.csv/.txt→misc.
   - Collisions get a -YYYYMMDD-HHMMSS suffix. Every move is logged.
+  - HOLD guard (2026-08-01): files that look client-critical or confidential are never
+    aged out of the Inbox; they are logged as HOLD so they get filed into a project tree.
+  - Archive TTL (2026-08-01): _archive/<YYYY-MM>/ folders older than the TTL are staged
+    into deletions/ — the sweep's terminal stage. Staging is never deletion.
 
-Usage: inbox_sweep.py [--dry-run] [--no-expire]
+Usage: inbox_sweep.py [--dry-run] [--no-expire] [--no-reap]
 Log:   ~/Library/Logs/zs-ai-os/inbox-sweep.log
 """
 from __future__ import annotations
@@ -21,6 +25,7 @@ import re
 import subprocess
 import sys
 import time
+from datetime import date
 from pathlib import Path
 
 
@@ -38,6 +43,9 @@ LOG = HOME / "Library/Logs/zs-ai-os/inbox-sweep.log"
 DOWNLOADS_MIN_AGE_S = 48 * 3600
 EXPIRE_DAYS = _env_int("INBOX_EXPIRE_DAYS", 14)
 INBOX_INGEST_CAP = _env_int("INBOX_INGEST_CAP", 15)
+ARCHIVE_TTL_DAYS = _env_int("INBOX_ARCHIVE_TTL_DAYS", 90)
+DELETIONS = INBOX / "deletions"
+STAGED_AT = ".staged-at"
 NOTEBOOKLM = HOME / "bin/notebooklm"
 NOTEBOOKLM_TIMEOUT_S = 120
 MARKITDOWN = HOME / ".local/bin/markitdown"  # NotebookLM rejects raw .html uploads; convert to .md first
@@ -54,6 +62,30 @@ ROUTES = {".html": "html", ".md": "notes", ".pdf": "pdfs",
 EXPIRE_SUBDIRS = ("html", "notes", "pdfs", "misc", "screenshots")
 INGEST_SUBDIRS = {"html", "notes"}
 INGEST_EXTS = {".md", ".html"}
+
+# HOLD guard (2026-08-01). Expiry ages files out by mtime alone, which treats a
+# confidential client operating model exactly like a dream-digest. On 2026-08-01 that
+# had buried rise-performance-operating-model-v8-master.md — the declared single source
+# of truth for a live client, with no copy anywhere else on disk — in _archive/2026-07/.
+# Anything matching these is never expired; it is logged as HOLD so it gets filed into
+# a project tree instead. Bias is deliberately toward over-holding: a false positive
+# leaves one extra file in the Inbox, a false negative loses something irreplaceable.
+# Separator is [\s_-]* on every multi-word term: real filenames mix "Pitch Deck",
+# "pitch-deck" and "pitch_deck" freely, and a PDF's name is its ONLY signal because
+# PROTECT_SCAN_EXTS cannot read inside it.
+PROTECT_NAME_RE = re.compile(
+    r"(confidential|operating[\s_-]*model|source[\s_-]*of[\s_-]*truth|"
+    r"term[\s_-]*sheet|cap[\s_-]*table|pitch[\s_-]*deck|"
+    r"contract|agreement|\bloi\b|invoice|decision[\s_-]*log)",
+    re.IGNORECASE,
+)
+PROTECT_CONTENT_RE = re.compile(
+    r"(confidential|source of truth|internal working document|"
+    r"do not distribute|proprietary and)",
+    re.IGNORECASE,
+)
+PROTECT_SCAN_EXTS = {".md", ".txt", ".html", ".csv"}
+PROTECT_SCAN_BYTES = 4096
 
 
 def route(path: Path) -> str | None:
@@ -115,9 +147,10 @@ def candidates() -> tuple[list[Path], list[str]]:
     return found, warnings
 
 
-def _expired_files() -> tuple[list[tuple[Path, str, float]], list[str]]:
+def _expired_files() -> tuple[list[tuple[Path, str, float]], list[str], list[tuple[Path, str]]]:
     found: list[tuple[Path, str, float]] = []
     warnings: list[str] = []
+    held: list[tuple[Path, str]] = []
     cutoff = time.time() - (EXPIRE_DAYS * 86400)
     for subdir in EXPIRE_SUBDIRS:
         root = INBOX / subdir
@@ -140,9 +173,33 @@ def _expired_files() -> tuple[list[tuple[Path, str, float]], list[str]]:
                 warnings.append(f"SKIP {path} — {exc}")
                 continue
             if mtime < cutoff:
+                reason = _protected_reason(path)
+                if reason:
+                    held.append((path, reason))
+                    continue
                 found.append((path, subdir, mtime))
     found.sort(key=lambda item: (item[2], item[0].name.lower()))
-    return found, warnings
+    held.sort(key=lambda item: item[0].name.lower())
+    return found, warnings, held
+
+
+def _protected_reason(path: Path) -> str | None:
+    """Why this file must not be aged out of the Inbox, or None.
+
+    Checks the filename first (cheap, works for PDFs and images), then the head of
+    text-ish files — the strongest signal is usually a confidentiality banner in the
+    document itself rather than its name.
+    """
+    if PROTECT_NAME_RE.search(path.name):
+        return "name"
+    if path.suffix.lower() not in PROTECT_SCAN_EXTS:
+        return None
+    try:
+        with path.open("r", errors="replace") as fh:
+            head = fh.read(PROTECT_SCAN_BYTES)
+    except OSError:
+        return None  # unreadable: leave it to the normal expiry path
+    return "content" if PROTECT_CONTENT_RE.search(head) else None
 
 
 def _needs_ingest(path: Path, subdir: str) -> bool:
@@ -317,10 +374,15 @@ def _ingest_files(
 
 def expire_inbox(lines: list[str], stamp: str, dry: bool) -> list[str]:
     warnings: list[str] = []
-    expired, scan_warnings = _expired_files()
+    expired, scan_warnings, held = _expired_files()
     for warn in scan_warnings:
         warnings.append(warn)
         lines.append(f"{stamp} {warn}")
+    for path, reason in held:
+        lines.append(
+            f"{stamp} HOLD {path} — looks client-critical/confidential ({reason}); "
+            f"not archived. File it into a project tree."
+        )
 
     month = time.strftime("%Y-%m")
     direct = [(p, subdir) for p, subdir, _mtime in expired if not _needs_ingest(p, subdir)]
@@ -335,14 +397,81 @@ def expire_inbox(lines: list[str], stamp: str, dry: bool) -> list[str]:
     lines.append(
         f"{stamp} {'DRY ' if dry else ''}expiry summary: "
         f"ingested={ingested} archived={archived} failed={failed} "
-        f"skipped-by-cap={skipped_by_cap}"
+        f"skipped-by-cap={skipped_by_cap} held={len(held)}"
     )
     return warnings
+
+
+def _month_end_epoch(month: str) -> float | None:
+    """Epoch seconds for the first instant AFTER the given YYYY-MM month."""
+    try:
+        year, mon = (int(part) for part in month.split("-"))
+        nxt = date(year + (mon == 12), 1 if mon == 12 else mon + 1, 1)
+    except (ValueError, TypeError):
+        return None
+    return time.mktime(nxt.timetuple())
+
+
+def reap_archive(lines: list[str], stamp: str, dry: bool) -> int:
+    """Stage _archive/<YYYY-MM>/ folders past the TTL into deletions/.
+
+    This is the sweep's terminal stage. Without it _archive is a one-way ratchet:
+    files move Inbox -> _archive and stay forever (413 MB had accumulated by
+    2026-08-01). Staging is NOT deletion — emptying deletions/ stays a human act.
+
+    The month folder's NAME is the clock, deliberately not its mtime: archiving is a
+    rename, which preserves each file's original mtime, so mtime records when the
+    content was written, not when it was archived. Reaping by mtime would stage a
+    just-archived file the moment it landed.
+    """
+    archive_root = INBOX / "_archive"
+    if not archive_root.is_dir():
+        return 0
+    entries, warn = _safe_listdir(archive_root)
+    if warn:
+        lines.append(f"{stamp} {warn}")
+        return 0
+
+    now = time.time()
+    reaped = 0
+    dest_root = DELETIONS / f"{time.strftime('%Y-%m-%d')}-archive-expiry"
+    for month_dir in sorted(entries):
+        if not month_dir.is_dir():
+            continue
+        month_end = _month_end_epoch(month_dir.name)
+        if month_end is None:
+            lines.append(f"{stamp} SKIP reap {month_dir} — unrecognized month folder name")
+            continue
+        age_days = (now - month_end) / 86400
+        if age_days <= ARCHIVE_TTL_DAYS:
+            continue
+        dest = _with_collision_suffix(dest_root / month_dir.name)
+        lines.append(
+            f"{stamp} {'DRY ' if dry else ''}REAP {month_dir} -> {dest} "
+            f"({age_days:.0f}d past month end, TTL {ARCHIVE_TTL_DAYS}d)"
+        )
+        if dry:
+            reaped += 1
+            continue
+        err = _move_file(month_dir, dest)
+        if err:
+            lines.append(f"{stamp} WARN reap failed {month_dir}: {err}")
+            continue
+        # Record when this was STAGED. Nothing else here can: every mtime under dest
+        # belongs to the original content, so a deletions reaper reading mtime would
+        # see items as weeks old the day they arrive.
+        try:
+            (dest / STAGED_AT).write_text(f"{time.strftime('%Y-%m-%dT%H:%M:%S')} inbox_sweep reap\n")
+        except OSError as exc:
+            lines.append(f"{stamp} WARN could not write {STAGED_AT} in {dest}: {exc}")
+        reaped += 1
+    return reaped
 
 
 def main() -> None:
     dry = "--dry-run" in sys.argv
     no_expire = "--no-expire" in sys.argv
+    no_reap = "--no-reap" in sys.argv
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
     lines = []
     _prepare_log(lines, stamp)
@@ -367,6 +496,14 @@ def main() -> None:
         lines.append(f"{stamp} {'DRY ' if dry else ''}expiry skipped (--no-expire)")
     else:
         warnings += expire_inbox(lines, stamp, dry)
+    if no_reap:
+        lines.append(f"{stamp} {'DRY ' if dry else ''}archive reap skipped (--no-reap)")
+    else:
+        reaped = reap_archive(lines, stamp, dry)
+        lines.append(
+            f"{stamp} {'DRY ' if dry else ''}reap summary: "
+            f"months-staged={reaped} ttl={ARCHIVE_TTL_DAYS}d"
+        )
     _write_log(lines, stamp)
     print("\n".join(lines))
     if any("permission denied" in w for w in warnings):

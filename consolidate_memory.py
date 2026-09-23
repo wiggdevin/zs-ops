@@ -24,14 +24,22 @@ PRUNE_CODE = "--prune-code" in sys.argv
 
 
 def _token():
-    # zs-memory requires bearer auth (token lives in ZS Vault)
+    # zs-memory requires bearer auth (token lives in ZS Vault). Uses the SCOPED
+    # `automation` token, not the primary: the primary bypasses scope checks and
+    # can target any user_id including delete_all_memories, which is far more
+    # authority than a scheduled consolidation pass needs.
+    #
+    # --prune-code needs delete, which this scope refuses (403). Run that mode
+    # explicitly with the maintenance token:
+    #   ZS_MEMORY_TOKEN="$(zsvault get zs_memory_maintenance_token)" \
+    #     python3 consolidate_memory.py --prune-code
     t = os.environ.get("ZS_MEMORY_TOKEN")
     if t:
         return t
     import subprocess
     try:
         return subprocess.check_output(
-            [os.path.expanduser("~/bin/zsvault"), "get", "zs_memory_token"],
+            [os.path.expanduser("~/bin/zsvault"), "get", "zs_memory_token_automation"],
             text=True, stderr=subprocess.DEVNULL).strip()
     except Exception:
         return ""

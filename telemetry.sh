@@ -15,6 +15,7 @@ set -uo pipefail
 TELEMETRY_LOG="${TELEMETRY_LOG:-$HOME/Library/Logs/zs-telemetry.jsonl}"
 MEM0_API="${MEM0_API:-http://localhost:8765}"
 OLLAMA_API="${OLLAMA_API:-http://localhost:11434}"
+OMLX_API="${OMLX_API:-http://127.0.0.1:8000}"
 mkdir -p "$(dirname "$TELEMETRY_LOG")"
 
 ts() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -37,6 +38,7 @@ sample() { # sample <component> <url>
 }
 
 sample mem0   "$MEM0_API/health"
+sample omlx   "$OMLX_API/health"
 sample ollama "$OLLAMA_API/api/tags"
 
 # Resident models (RAM pressure) — best-effort. Distinguish daemon-down
