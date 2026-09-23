@@ -65,6 +65,12 @@ export MEM0_API="http://127.0.0.1:1"
 LIVE_FILES="$HOME/Library/Logs/zs-telemetry.jsonl $HOME/Library/Logs/zs-watchdog.jsonl $HOME/Library/Logs/zs-watchdog-heartbeat"
 live_sig() { for f in $LIVE_FILES; do printf '%s:%s ' "$(basename "$f")" "$(stat -f %m "$f" 2>/dev/null || echo none)"; done; }
 LIVE_BEFORE="$(live_sig)"
+# The REAL watchdog (5 min) and watchdog-liveness (15 min) also write these files.
+# Record their launchd run count + running pid so a live sweep that overlaps this
+# suite is not misread as a test leak (flaky failure observed 2026-09-22).
+daemon_sig() { for j in com.zs.watchdog com.zs.watchdog-liveness; do
+  launchctl print "gui/$(id -u)/$j" 2>/dev/null | awk -v j="$j" '/^\truns = /{r=$3} /^\tpid = /{p=$3} END{printf "%s:%s:%s ", j, r, (p?p:"-")}'; done; }
+DAEMONS_BEFORE="$(daemon_sig)"
 
 # Run a full sweep offline. MEMORY_API/OLLAMA_API point at a closed port, so
 # those checks fail — which is exactly the "ran fine, found problems" state.
@@ -263,8 +269,14 @@ probe_unknown=$(
 # It runs the REAL watchdog, which invokes telemetry.sh by absolute path — a PATH
 # stub cannot hide that, so only the env redirects above keep it offline. Assert
 # it rather than trusting it.
-[ "$(live_sig)" = "$LIVE_BEFORE" ] && pass "isolation/live-state-untouched" \
-  || fail "isolation/live-state-untouched" "a live log changed: $LIVE_BEFORE -> $(live_sig)"
+DAEMONS_AFTER="$(daemon_sig)"
+if [ "$(live_sig)" = "$LIVE_BEFORE" ]; then
+  pass "isolation/live-state-untouched"
+elif [ "$DAEMONS_AFTER" != "$DAEMONS_BEFORE" ] || printf '%s%s' "$DAEMONS_BEFORE" "$DAEMONS_AFTER" | grep -qE ':[0-9]+ '; then
+  echo "SKIP isolation/live-state-untouched — a live watchdog ran during the suite ($DAEMONS_BEFORE -> $DAEMONS_AFTER)"
+else
+  fail "isolation/live-state-untouched" "a live log changed: $LIVE_BEFORE -> $(live_sig)"
+fi
 
 rm -rf "$TMP_DIR"
 [ "$fails" -eq 0 ] && { echo "--- all watchdog exit/heartbeat tests passed ---"; exit 0; }
