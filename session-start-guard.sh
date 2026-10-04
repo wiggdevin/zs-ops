@@ -17,7 +17,6 @@ set -uo pipefail
 
 MEMORY_API="${MEMORY_API:-http://localhost:8765}"
 OLLAMA_API="${OLLAMA_API:-http://localhost:11434}"
-OMLX_API="${OMLX_API:-http://127.0.0.1:8000}"
 
 offline=0
 ok()  { printf '  ✓ %s\n' "$1"; }
@@ -31,9 +30,6 @@ echo "── memory stack pre-flight ──"
 
 if http_ok "$MEMORY_API/health"; then ok "zs-memory :8765"
 else bad "zs-memory :8765 (launchctl kickstart -k gui/\$(id -u)/com.zs.memory)"; fi
-# oMLX is opt-in and on-demand (codex-omlx / claude-omlx start it), so idle is not a fault.
-if http_ok "$OMLX_API/health" 5; then ok "oMLX :8000 local inference (running)"
-else ok "oMLX :8000 idle (starts on demand via codex-omlx / claude-omlx)"; fi
 if http_ok "$OLLAMA_API/api/tags"; then ok "ollama :11434 compatibility embeddings"
 else bad "ollama :11434 embeddings (launchctl kickstart -k gui/\$(id -u)/com.zs.ollama)"; fi
 
