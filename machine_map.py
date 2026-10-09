@@ -146,13 +146,13 @@ def memory_section():
     if token:
         try:
             req = urllib.request.Request(
-                "http://localhost:8765/api/v1/memories/?user_id=zero-fleet&size=1&page=1",
+                "http://127.0.0.1:8765/api/v1/memories/?user_id=zero-fleet&size=1&page=1",
                 headers={"Authorization": f"Bearer {token}"})
             with urllib.request.urlopen(req, timeout=10) as resp:
                 total = json.loads(resp.read()).get("total", "?")
         except Exception:
             total = "unreachable"
-    lines.append(f"- store: {total} memories (user_id=zero-fleet, localhost:8765)")
+    lines.append(f"- store: {total} memories (user_id=zero-fleet, 127.0.0.1:8765)")
     digests = sorted(glob(f"{HOME}/Inbox/notes/dream-digest-*.md"))
     lines.append(f"- latest dream digest: {digests[-1] if digests else 'none yet'}")
     db_dir = f"{HOME}/.local/share/zs-memory"

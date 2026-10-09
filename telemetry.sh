@@ -13,7 +13,7 @@
 set -uo pipefail
 
 TELEMETRY_LOG="${TELEMETRY_LOG:-$HOME/Library/Logs/zs-telemetry.jsonl}"
-MEM0_API="${MEM0_API:-http://localhost:8765}"
+MEM0_API="${MEM0_API:-http://127.0.0.1:8765}"
 OLLAMA_API="${OLLAMA_API:-http://localhost:11434}"
 mkdir -p "$(dirname "$TELEMETRY_LOG")"
 

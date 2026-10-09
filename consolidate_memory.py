@@ -13,12 +13,12 @@ Stdlib only (no deps). Talks to the mem0 REST API. DRY-RUN by default.
 
   python3 consolidate_memory.py                 # report only (safe)
   python3 consolidate_memory.py --prune-code     # actually delete code-dumps
-  MEM0_API=http://localhost:8765 USER_ID=zero-fleet python3 consolidate_memory.py
+  MEM0_API=http://127.0.0.1:8765 USER_ID=zero-fleet python3 consolidate_memory.py
 """
 import os, re, sys, json, urllib.request, urllib.parse
 from difflib import SequenceMatcher
 
-API = os.environ.get("MEM0_API", "http://localhost:8765")
+API = os.environ.get("MEM0_API", "http://127.0.0.1:8765")
 USER_ID = os.environ.get("USER_ID", "zero-fleet")
 PRUNE_CODE = "--prune-code" in sys.argv
 

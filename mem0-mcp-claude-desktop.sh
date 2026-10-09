@@ -15,6 +15,6 @@ if [ -z "${ZS_MEMORY_TOKEN:-}" ]; then
 fi
 export ZS_MEMORY_TOKEN
 
-exec /Users/zero-suminc./.local/share/mise/shims/npx -y mcp-remote http://localhost:8765/mcp \
+exec /Users/zero-suminc./.local/share/mise/shims/npx -y mcp-remote http://127.0.0.1:8765/mcp \
   --header 'Authorization: Bearer ${ZS_MEMORY_TOKEN}' \
   --header "X-Client-Name: claude-desktop"

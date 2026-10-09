@@ -18,7 +18,7 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WATCHDOG_LOG="${WATCHDOG_LOG:-$HOME/Library/Logs/zs-watchdog.jsonl}"
-MEMORY_API="${MEMORY_API:-http://localhost:8765}"
+MEMORY_API="${MEMORY_API:-http://127.0.0.1:8765}"
 OLLAMA_API="${OLLAMA_API:-http://localhost:11434}"
 BACKUP_DIR="${BACKUP_DIR:-$HOME/Backups/zs-mem0-backups}"
 # iCloud mirror written by zs-memory/ops/backup-zs-memory.sh (default since 2026-07-09)
