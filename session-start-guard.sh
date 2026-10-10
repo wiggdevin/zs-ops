@@ -15,7 +15,7 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail
 
-MEMORY_API="${MEMORY_API:-http://localhost:8765}"
+MEMORY_API="${MEMORY_API:-http://127.0.0.1:8765}"
 OLLAMA_API="${OLLAMA_API:-http://localhost:11434}"
 
 offline=0
