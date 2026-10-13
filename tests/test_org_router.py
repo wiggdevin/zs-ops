@@ -1,4 +1,4 @@
-"""org_router tests against a temp Inbox: bundles move whole, recency, handoff 7-day rule,
+"""org_router tests against a temp Inbox: bundles move whole, recency, handoff 1-day rule,
 skip list, symlinks, .git flag, already-filed, no-overwrite, undo, Jev threshold + cache."""
 import json
 import os
@@ -60,7 +60,7 @@ with tempfile.TemporaryDirectory() as td:
     age_tree(live, 3 * 86400)
     touch(live / "deep/new.txt", age_s=20)
     # handoffs: recent stays flat, old gets filed
-    touch(root / "notes/handoffs/2026-10-12-sasha-recent.md", age_s=2 * DAY)
+    touch(root / "notes/handoffs/2026-10-12-sasha-recent.md", age_s=DAY // 2)
     touch(root / "notes/handoffs/2026-09-01-sasha-old.md", age_s=40 * DAY)
     # skip list
     touch(root / "misc/mish-team-packs-v2/x.txt")
@@ -481,10 +481,10 @@ finally:
 # WARN 9: apply re-checks the 7-day handoff rule
 base, r = fresh_inbox("handoff-")
 try:
-    h = touch(r / "notes/handoffs/2026-10-12-sasha-live.md", age_s=2 * DAY)
+    h = touch(r / "notes/handoffs/2026-10-12-sasha-live.md", age_s=DAY // 2)
     res_h = rt.apply_rows([row_for(h, r / "notes/handoffs/sasha/2026-10/2026-10-12-sasha-live.md", type="handoffs")],
                           inbox=r)
-    check("apply refuses a handoff younger than 7 days", res_h[0]["status"] == "skipped-handoff-7d" and h.exists(), res_h)
+    check("apply refuses a handoff younger than 1 day", res_h[0]["status"] == "skipped-handoff-7d" and h.exists(), res_h)
     old = touch(r / "notes/handoffs/2026-09-01-sasha-old.md", age_s=40 * DAY)
     res_h2 = rt.apply_rows([row_for(old, r / "notes/handoffs/sasha/2026-09/2026-09-01-sasha-old.md", type="handoffs")],
                            inbox=r)

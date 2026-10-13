@@ -12,7 +12,7 @@ The old weekly sweeper (launchd com.zs.inbox-sweep) is UNLOADED (frozen) until t
    notes misc. Admin at Inbox L1: `Potential Deletes/`, `_views/`, `_shortcuts/`, `_archive/`.
    `_unassigned` is the project for unknowns.
 2. Bundles (directories) move as one unit. Never descend into a bundle; never route its children.
-3. Handoffs modified in the last 7 days stay flat in `notes/handoffs/` (live resume paths);
+3. Handoffs modified in the last day stay flat (was 7 days; shortened 2026-10-13 at Devin's request to leave no flat leftovers) in `notes/handoffs/` (live resume paths);
    the daily job files them once they are >7 days old. Readers search recursively.
 4. Desktop: exactly `Projects` alias, `Inbox` alias, plus the Devin Search desktop bar
    (app window, not a file). An item dropped on Desktop is routed; a Finder alias to its new
@@ -24,7 +24,7 @@ The old weekly sweeper (launchd com.zs.inbox-sweep) is UNLOADED (frozen) until t
    library.yaml paths are updated on a zs-library feature branch in a separate worktree
    (never touch the 5f session's working tree), PR opened, 5f told before merge.
 6. Daily automation ships now (not after a 7-day audit), but its mutations are limited to:
-   routing NEW top-level items into the layout, filing >7-day handoffs, moving >30-day
+   routing NEW top-level items into the layout, filing >1-day handoffs, moving >30-day
    completed items to cold storage ONLY via verified tar.zst on /Volumes/DevinBackUp (list +
    hash verified, source removed only after verify), and moving uncertain items to
    `Potential Deletes/`. It never deletes unique files, never touches repos, never touches

@@ -10,7 +10,7 @@ Replaces the weekly sweeper (2026-10-13 machine reorganisation, spec:
      ~/Inbox/<type>/<project>/<YYYY-MM>/<name>. Files routed FROM the Desktop get a Finder
      alias on the Desktop.
   3. Route new top-level Inbox items (bundles move whole; nothing modified in the last 10
-     minutes; handoffs only once older than 7 days).
+     minutes; handoffs only once older than 1 day).
   4. List >30-day unpinned items as cold-archive candidates (written, never archived here).
   5. Advance the screenshot location to this month's folder.
   6. Ingest fresh research notes (name contains "research", created in the last day) into
