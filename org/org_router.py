@@ -10,7 +10,7 @@ Rules (spec decisions 2, 3, 6, 7):
   - Each top-level file or directory bundle moves whole. Never enter .git; a bundle that
     contains .git is routed whole and flagged has_git. Symlinks are skipped.
   - Items modified in the last 10 minutes (newest mtime inside a bundle) are skipped.
-  - notes/handoffs items modified in the last 7 days stay flat.
+  - notes/handoffs items modified in the last day stay flat.
   - Registered project dirs, month dirs and admin dirs are left alone.
   - Project: alias match on the name, then on a markdown title, then Jev (closed slug set
     + _unassigned, accept p >= 0.85). Jev sees names and <=300 chars of a title/README
@@ -46,7 +46,7 @@ import inbox_paths as ip  # noqa: E402
 
 HOME = Path.home()
 RECENT_S = 10 * 60
-HANDOFF_FLAT_S = 7 * 86400
+HANDOFF_FLAT_S = 1 * 86400
 JEV_ACCEPT = 0.85
 JEV_BATCH = 24
 WALK_CAP = 30000
@@ -54,14 +54,9 @@ MANIFEST_DIR = HERE / "manifests"
 JEV_CACHE = HERE / "jev-cache.json"
 SKIP_DIRS_IN_WALK = {".git", "node_modules"}
 
-# Moved by another builder to the external drive; never touch.
-DEFAULT_SKIP = [
-    "misc/mish-team-packs-v2",
-    "misc/mish-team-packet-2026-10-12.zip",
-    "notes/2026-10-09-qa",
-    "notes/2026-10-10-qa",
-    "notes/quality-bench-proof-2026-10-10",
-]
+# Migration-time guard for items another builder was archiving; empty since 2026-10-13
+# (those items are archived or filed now).
+DEFAULT_SKIP = []
 # This run's own docs: routed last, by a separate explicit step.
 DEFER_LAST = [
     "plans/2026-10-13-machine-org-design-sol.md",
@@ -792,7 +787,7 @@ def apply_rows(rows, max_moves=None, now=None, inbox=None, allow_src_roots=None,
 
     status: done | already-done | skipped-<why> | failed-<why>. Never overwrites (even when the
     destination appears after the check), never crosses volumes (EXDEV is a failure), never
-    moves a git repo, and re-checks recency, the 7-day handoff rule, symlinks, canonical paths
+    moves a git repo, and re-checks recency, the 1-day handoff rule, symlinks, canonical paths
     and scan completeness right before each move. With a journal, an fsynced intent row precedes
     each rename and a result row follows it. skip_done: {(src, dst)} already done (resume).
     """

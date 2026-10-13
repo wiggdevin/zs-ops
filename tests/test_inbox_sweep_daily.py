@@ -1,5 +1,5 @@
 """Daily engine tests (inbox_sweep.run) against a temp home: Desktop/Downloads ingest,
-bundle-as-unit, skip-recent, handoff 7-day rule, alias creation + 3-day expiry, cold
+bundle-as-unit, skip-recent, handoff 1-day rule, alias creation + 3-day expiry, cold
 candidates, screenshot month, research ingest, lock. No network, no Finder, no launchd."""
 import fcntl
 import importlib.util
@@ -96,7 +96,7 @@ with tempfile.TemporaryDirectory() as td:
     touch(bundle / "evidence/1.png")
     touch(bundle / "README.md", text="# Sasha QA\n")
     age_tree(bundle, 4 * DAY)
-    touch(inbox / "notes/handoffs/2026-10-12-sasha-recent.md", age_s=2 * DAY)
+    touch(inbox / "notes/handoffs/2026-10-12-sasha-recent.md", age_s=DAY // 2)
     touch(inbox / "notes/handoffs/2026-09-20-sasha-old.md", age_s=20 * DAY)
     touch(inbox / "notes/2026-10-12-spindle-just-now.md", age_s=60)
 
