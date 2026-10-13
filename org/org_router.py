@@ -54,14 +54,9 @@ MANIFEST_DIR = HERE / "manifests"
 JEV_CACHE = HERE / "jev-cache.json"
 SKIP_DIRS_IN_WALK = {".git", "node_modules"}
 
-# Moved by another builder to the external drive; never touch.
-DEFAULT_SKIP = [
-    "misc/mish-team-packs-v2",
-    "misc/mish-team-packet-2026-10-12.zip",
-    "notes/2026-10-09-qa",
-    "notes/2026-10-10-qa",
-    "notes/quality-bench-proof-2026-10-10",
-]
+# Migration-time guard for items another builder was archiving; empty since 2026-10-13
+# (those items are archived or filed now).
+DEFAULT_SKIP = []
 # This run's own docs: routed last, by a separate explicit step.
 DEFER_LAST = [
     "plans/2026-10-13-machine-org-design-sol.md",

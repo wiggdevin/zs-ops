@@ -84,7 +84,7 @@ with tempfile.TemporaryDirectory() as td:
 
     touch(root / "notes/Icon\r", age_s=3 * DAY)
     touch(root / "misc/Icon\r", age_s=3 * DAY)
-    rows = rt.build_plan(use_jev=False)
+    rows = rt.build_plan(use_jev=False, skip_extra=["misc/mish-team-packs-v2"])
     mv = {r["name"]: r for r in rows if r["op"] == "move"}
     sk = {r["name"]: r["reason"] for r in rows if r["op"] == "skip"}
 
