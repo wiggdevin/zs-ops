@@ -197,7 +197,7 @@ def main():
     lines += storage_section() + [""] + memory_section() + [
         "",
         "_Services, ports, and MCP wiring: see the zs-os-doctor weekly report_",
-        "_(~/Inbox/html/os-doctor-report-*.html; source of truth: zs-os-doctor/map/declared.json)._",
+        "_(~/Inbox/html/mac-ops/<YYYY-MM>/*os-doctor-report*.html; find it with ~/bin/inbox-find --type html os-doctor-report; source of truth: zs-os-doctor/map/declared.json)._",
     ]
     with open(OUT, "w") as f:
         f.write("\n".join(lines) + "\n")
