@@ -17,7 +17,7 @@ jobs:
       - name: Shell syntax
         run: for f in *.sh lib/*.sh tests/*.sh; do bash -n "$f" && echo "ok $f"; done
       - name: Python syntax
-        run: python -m py_compile *.py
+        run: python -m py_compile *.py org/*.py
       - name: JSON config
         run: for f in *.json; do python -m json.tool "$f" > /dev/null && echo "ok $f"; done
       - name: Portable tests

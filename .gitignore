@@ -3,3 +3,6 @@ __pycache__/
 op-guard.log
 _decommissioned-*/
 helm-ntfy-topic
+org/jev-cache.json
+org/state/
+org/manifests/
