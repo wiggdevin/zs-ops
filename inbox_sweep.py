@@ -756,6 +756,11 @@ def run(dry=False, use_jev=True, do_ingest=True, do_screens=True, do_cold=True, 
 
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    known = {"--dry-run", "--no-jev", "--no-ingest", "--no-screenshots", "--no-cold", "--reap-archive"}
+    unknown = [a for a in argv if a not in known]
+    if unknown:
+        print(f"usage: inbox_sweep.py [{' | '.join(sorted(known))}]  (unknown: {' '.join(unknown)})", file=sys.stderr)
+        return 2
     dry = "--dry-run" in argv
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     lock_fh = open(STATE_DIR / "sweep.lock", "w")
