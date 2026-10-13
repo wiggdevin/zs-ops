@@ -4,7 +4,7 @@ Driver: Claude Opus 5.5 session zero-suminc-3d. Full design (read the sections y
 /Users/zero-suminc./Inbox/plans/2026-10-13-machine-org-design-sol.md (GPT-6.1 Sol).
 Project registry (single source of truth): /Users/zero-suminc./.config/zs-ops/org/projects.json
 Config/manifests backup of this run: /Users/zero-suminc./Backups/machine-org/20261013-060040/
-The old weekly sweeper (launchd com.zs.inbox-sweep) is UNLOADED (frozen) until the new engine replaces it.
+The new engine is live: launchd com.zs.inbox-sweep runs inbox_sweep.py daily at 07:30; Hermes cron machine-org-review runs org_daily_review.py at 08:00. The old weekly sweeper and inbox-janitor are retired (janitor archived at ~/projects/archive/inbox-janitor).
 
 ## Driver decisions that override or simplify the Sol design
 1. Inbox layout = Sol's: `~/Inbox/<type>/<project>/<YYYY-MM>/<item>`; handoffs =
@@ -12,8 +12,9 @@ The old weekly sweeper (launchd com.zs.inbox-sweep) is UNLOADED (frozen) until t
    notes misc. Admin at Inbox L1: `Potential Deletes/`, `_views/`, `_shortcuts/`, `_archive/`.
    `_unassigned` is the project for unknowns.
 2. Bundles (directories) move as one unit. Never descend into a bundle; never route its children.
-3. Handoffs modified in the last day stay flat (was 7 days; shortened 2026-10-13 at Devin's request to leave no flat leftovers) in `notes/handoffs/` (live resume paths);
-   the daily job files them once they are >7 days old. Readers search recursively.
+3. Handoffs modified in the last day stay flat in `notes/handoffs/` (live resume paths); the
+   daily job files them once they are >1 day old (was 7 days; shortened 2026-10-13 at Devin's
+   request to leave no flat leftovers). Readers search recursively.
 4. Desktop: exactly `Projects` alias, `Inbox` alias, plus the Devin Search desktop bar
    (app window, not a file). An item dropped on Desktop is routed; a Finder alias to its new
    location is left on Desktop for 3 days, then removed (item stays in search Recent).
