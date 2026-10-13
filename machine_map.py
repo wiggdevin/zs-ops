@@ -16,6 +16,7 @@ declared-edge invariants. zs-system-map was archived, superseded by the doctor.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.request
@@ -136,6 +137,20 @@ def storage_section():
     return lines
 
 
+def latest_dream_digests(root: str | None = None) -> list[str]:
+    """Dream digests oldest to newest, by the date in the file name. Covers the nested Inbox
+    layout (notes/<project>/<YYYY-MM>/<date>-<project>-dream-digest.md) and legacy flat
+    notes/dream-digest-<date>.md; `_archive` copies are ignored."""
+    root = root or f"{HOME}/Inbox/notes"
+    found = glob(f"{root}/**/*dream-digest*.md", recursive=True)
+
+    def key(path: str):
+        m = re.search(r"(\d{4}-\d{2}-\d{2})", os.path.basename(path))
+        return (m.group(1) if m else "", os.path.getmtime(path))
+
+    return sorted((p for p in found if "/_archive/" not in p and re.search(r"\d{4}-\d{2}-\d{2}", os.path.basename(p))), key=key)
+
+
 def memory_section():
     lines = ["## Memory (zs-memory)", ""]
     # Scoped `automation` token — this section only counts memories, so it has
@@ -153,7 +168,7 @@ def memory_section():
         except Exception:
             total = "unreachable"
     lines.append(f"- store: {total} memories (user_id=zero-fleet, 127.0.0.1:8765)")
-    digests = sorted(glob(f"{HOME}/Inbox/notes/dream-digest-*.md"))
+    digests = latest_dream_digests()
     lines.append(f"- latest dream digest: {digests[-1] if digests else 'none yet'}")
     db_dir = f"{HOME}/.local/share/zs-memory"
     if os.path.exists(db_dir):
