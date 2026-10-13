@@ -176,8 +176,9 @@ def allocate(project, type, subject, ext=None, bundle=False, date=None):
 
     <Inbox>/<type>/<slug>/<YYYY-MM>/<YYYY-MM-DD>-<slug>-<subject>[.ext]; for the
     "_unassigned" project the slug is left out of the name. A bundle is a directory:
-    it is created (atomic mkdir) so the name stays reserved. A file is not created.
-    Same-day collisions get -02, -03 ...
+    it is created (atomic mkdir) so the name stays reserved. A file is created empty with
+    O_CREAT|O_EXCL for the same reason; the caller then overwrites it. Same-day collisions
+    get -02, -03 ...
     """
     slug = project if project in slugs() else resolve_project(project)
     day = _as_date(date)
@@ -206,9 +207,11 @@ def allocate(project, type, subject, ext=None, bundle=False, date=None):
             except FileExistsError:
                 n += 1
                 continue
-        if not os.path.lexists(str(cand)):
+        try:  # reserve the name: exclusive create, so two callers never get the same path
+            os.close(os.open(str(cand), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o644))
             return cand
-        n += 1
+        except FileExistsError:
+            n += 1
 
 
 # --------------------------------------------------------------------- find
@@ -302,7 +305,7 @@ def find(project=None, type=None, query=None, limit=20):
 def _cmd_path(argv):
     import argparse
     ap = argparse.ArgumentParser(prog="inbox-path",
-                                 description="Print a collision-free Inbox path and create its parent dir.")
+                                 description="Print a collision-free Inbox path; reserves it (empty file, or folder with --bundle).")
     ap.add_argument("project", help="project slug or alias; unknown -> _unassigned")
     ap.add_argument("type", help="html|plans|pdfs|screenshots|notes|misc|handoffs")
     ap.add_argument("subject")

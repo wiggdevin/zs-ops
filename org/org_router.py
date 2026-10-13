@@ -16,15 +16,26 @@ Rules (spec decisions 2, 3, 6, 7):
     + _unassigned, accept p >= 0.85). Jev sees names and <=300 chars of a title/README
     only, never contract/health/secret-looking files. Answers are cached in a JSON file.
 The manifest is JSONL: a "meta" row, then one "move" or "skip" row per item.
-apply writes <F>.applied.jsonl (status per move); undo reverses the "done" rows.
+apply appends to the journal <F>.applied.jsonl: an "intent" row (fsynced) before each rename
+and a "move" row with its status right after. Re-running apply resumes: rows already done are
+not repeated, intents without a result are reconciled first. Receipts are never rewritten.
+undo reverses the "done" rows (no-replace rename, canonical paths only).
+Safety: moves use an atomic no-replace rename (renamex_np RENAME_EXCL), never enter or move a
+git repo (is, contains or sits inside one), refuse symlinked ancestors, and skip any bundle
+whose scan did not finish.
 """
 from __future__ import annotations
 
+import ctypes
 import datetime as _dt
+import errno
+import fcntl
 import hashlib
 import json
 import os
 import re
+import stat
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -86,7 +97,10 @@ def month_of(ts):
 
 
 def walk_info(path, cap=WALK_CAP, stop_after=None):
-    """Cheap bundle scan: (newest_mtime, has_git, truncated).
+    """Cheap bundle scan: (newest_mtime, has_git, incomplete).
+
+    incomplete is True when the 30k-entry cap was hit or any directory or entry could not be
+    read: the answer is then not trustworthy and callers must not move the bundle.
 
     Never descends into .git or node_modules (their own mtime still counts), never follows
     symlinks. stop_after: return early once something newer than this epoch is seen.
@@ -94,11 +108,12 @@ def walk_info(path, cap=WALK_CAP, stop_after=None):
     try:
         st = os.lstat(str(path))
     except OSError:
-        return 0.0, False, False
+        return 0.0, False, True
     newest = st.st_mtime
     if not os.path.isdir(str(path)) or os.path.islink(str(path)):
         return newest, False, False
     has_git = False
+    incomplete = False
     seen = 0
     stack = [str(path)]
     while stack:
@@ -106,6 +121,7 @@ def walk_info(path, cap=WALK_CAP, stop_after=None):
         try:
             it = list(os.scandir(cur))
         except OSError:
+            incomplete = True
             continue
         for e in it:
             seen += 1
@@ -114,6 +130,7 @@ def walk_info(path, cap=WALK_CAP, stop_after=None):
             try:
                 st = e.stat(follow_symlinks=False)
             except OSError:
+                incomplete = True
                 continue
             if st.st_mtime > newest:
                 newest = st.st_mtime
@@ -124,7 +141,7 @@ def walk_info(path, cap=WALK_CAP, stop_after=None):
                 continue
             if e.is_dir(follow_symlinks=False) and e.name not in SKIP_DIRS_IN_WALK:
                 stack.append(e.path)
-    return newest, has_git, False
+    return newest, has_git, incomplete
 
 
 def _rel(path):
@@ -282,6 +299,274 @@ def jev_pick(items, cache_path=None, evaluate=None, log=None):
     return out
 
 
+# ------------------------------------------------------------ safe primitives
+RENAME_EXCL = 0x4        # macOS renamex_np flag: fail instead of replacing the destination
+_RENAME_NOREPLACE = 1    # Linux renameat2 flag (CI only; the job runs on macOS)
+_TEST_HOOK = None        # tests: hook(stage, src, dst), called between the last check and the rename
+_libc = None
+
+
+def _hook(stage, src, dst):
+    if _TEST_HOOK is not None:
+        _TEST_HOOK(stage, src, dst)
+
+
+def _libc_handle():
+    global _libc
+    if _libc is None:
+        try:
+            _libc = ctypes.CDLL(None, use_errno=True)
+        except OSError:
+            _libc = False
+    return _libc
+
+
+def rename_noreplace(src, dst):
+    """Atomic rename that raises FileExistsError instead of replacing dst.
+
+    macOS: renamex_np(RENAME_EXCL). Fallbacks when the call or filesystem lacks support:
+    a regular file moves by hard link + unlink (link fails if dst exists); a directory uses a
+    check-then-rename (not atomic, last resort).
+    """
+    s, d = os.fsencode(str(src)), os.fsencode(str(dst))
+    err = errno.ENOSYS
+    libc = _libc_handle()
+    if libc:
+        fn = getattr(libc, "renamex_np", None)
+        flag_args = None
+        if fn is not None:
+            fn.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+            flag_args = (s, d, RENAME_EXCL)
+        else:
+            fn = getattr(libc, "renameat2", None)
+            if fn is not None:
+                fn.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+                flag_args = (-100, s, -100, d, _RENAME_NOREPLACE)
+        if fn is not None:
+            ctypes.set_errno(0)
+            if fn(*flag_args) == 0:
+                return
+            err = ctypes.get_errno()
+    if err in (errno.EEXIST, errno.ENOTEMPTY):
+        raise FileExistsError(errno.EEXIST, "destination exists", str(dst))
+    if err not in (errno.ENOSYS, errno.ENOTSUP, errno.EINVAL):
+        raise OSError(err, os.strerror(err), str(dst))
+    if os.path.isfile(str(src)) and not os.path.islink(str(src)):
+        os.link(str(src), str(dst))          # FileExistsError if dst appeared
+        os.unlink(str(src))
+        return
+    if os.path.lexists(str(dst)):
+        raise FileExistsError(errno.EEXIST, "destination exists", str(dst))
+    os.rename(str(src), str(dst))
+
+
+def is_canonical(path):
+    """True when no component of path is a symlink (realpath equals abspath)."""
+    p = os.path.abspath(str(path))
+    return os.path.realpath(p) == p
+
+
+def safe_under(path, root):
+    """path is lexically inside root, and both are canonical (no symlinked ancestor)."""
+    p, r = os.path.abspath(str(path)), os.path.abspath(str(root))
+    if not (p == r or p.startswith(r.rstrip(os.sep) + os.sep)):
+        return False
+    return os.path.realpath(p) == p and os.path.realpath(r) == r
+
+
+def mkdirs_under(dirpath, root):
+    """Create dirpath (inside root) one component at a time; refuse a symlink component."""
+    root, d = os.path.abspath(str(root)), os.path.abspath(str(dirpath))
+    rel = os.path.relpath(d, root)
+    if rel == os.pardir or rel.startswith(os.pardir + os.sep):
+        raise OSError(errno.EXDEV, "directory outside root", d)
+    cur = root
+    for part in ([] if rel == "." else rel.split(os.sep)):
+        cur = os.path.join(cur, part)
+        if os.path.islink(cur):
+            raise OSError(errno.ELOOP, "symlink component", cur)
+        try:
+            os.mkdir(cur)
+        except FileExistsError:
+            if os.path.islink(cur) or not os.path.isdir(cur):
+                raise OSError(errno.ENOTDIR, "not a directory", cur)
+
+
+def _inside_git(path):
+    """True when path or any ancestor up to the home directory holds a .git."""
+    home = os.path.abspath(str(HOME))
+    cur = os.path.abspath(str(path))
+    while True:
+        if os.path.lexists(os.path.join(cur, ".git")):
+            return True
+        if cur == home or os.path.dirname(cur) == cur:
+            return False
+        cur = os.path.dirname(cur)
+
+
+def _full_sync(fd):
+    try:
+        fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
+    except OSError:
+        os.fsync(fd)
+
+
+class Journal(object):
+    """Append-only JSONL receipt file. Rows are never rewritten; intent and result rows are
+    flushed with F_FULLFSYNC so an interrupted run can be reconciled."""
+
+    def __init__(self, path):
+        self.path = str(path)
+        self.fd = None
+
+    def append(self, rec, sync=True):
+        if self.fd is None:
+            os.makedirs(os.path.dirname(self.path) or ".", exist_ok=True)
+            self.fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o644)
+            end = os.lseek(self.fd, 0, os.SEEK_END)
+            if end:  # a crash can leave a torn last line: start the next record on its own line
+                with open(self.path, "rb") as fh:
+                    fh.seek(end - 1)
+                    if fh.read(1) != b"\n":
+                        os.write(self.fd, b"\n")
+        os.write(self.fd, (json.dumps(rec, sort_keys=True) + "\n").encode())
+        if sync:
+            _full_sync(self.fd)
+
+    def close(self):
+        if self.fd is not None:
+            _full_sync(self.fd)
+            os.close(self.fd)
+            self.fd = None
+
+
+def read_journal(path):
+    """Rows of a JSONL file; a torn last line (crash mid-write) is ignored."""
+    rows = []
+    try:
+        with open(str(path)) as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    continue
+    except OSError:
+        pass
+    return rows
+
+
+def journal_done_keys(path):
+    return {(r.get("src"), r.get("dst")) for r in read_journal(path)
+            if r.get("op") == "move" and r.get("status") == "done"}
+
+
+def reconcile_journal(path, log=None):
+    """Resolve intents that have no result row (a crash between rename and receipt).
+
+    dst present and src gone -> done; src present and dst absent -> not moved; anything else
+    needs review. Appends result rows; returns how many intents were resolved.
+    """
+    pending = {}
+    for r in read_journal(path):
+        key = (r.get("src"), r.get("dst"))
+        if r.get("op") == "intent":
+            pending[key] = r
+        elif r.get("op") == "move":
+            pending.pop(key, None)
+    if not pending:
+        return 0
+    j = Journal(path)
+    for (src, dst), intent in pending.items():
+        has_src, has_dst = os.path.lexists(src), os.path.lexists(dst)
+        if has_dst and not has_src:
+            status = "done"
+        elif has_src and not has_dst:
+            status = "skipped-interrupted-not-moved"
+        elif has_src and has_dst:
+            status = "needs-review-both-exist"
+        else:
+            status = "needs-review-both-missing"
+        base = {k: v for k, v in intent.items() if k != "op"}
+        j.append(dict(base, op="move", status=status, reconciled=True))
+        if log:
+            log("reconciled interrupted move %s -> %s: %s" % (src, dst, status))
+    j.close()
+    return len(pending)
+
+
+def reconcile_all(manifest_dir=None, log=None):
+    """Reconcile every journal (*.applied.jsonl) in the manifest dir. Call at startup."""
+    n = 0
+    for p in sorted(Path(manifest_dir or MANIFEST_DIR).glob("*.applied.jsonl")):
+        n += reconcile_journal(p, log=log)
+    return n
+
+
+def finder_alias_flag(path):
+    """True when com.apple.FinderInfo marks the file as a Finder alias (flag 0x8000)."""
+    try:
+        out = subprocess.run(["/usr/bin/xattr", "-px", "com.apple.FinderInfo", str(path)],
+                             capture_output=True, text=True, timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if out.returncode != 0:
+        return False
+    try:
+        raw = bytes.fromhex("".join(out.stdout.split()))
+    except ValueError:
+        return False
+    return len(raw) >= 10 and bool(int.from_bytes(raw[8:10], "big") & 0x8000)
+
+
+ALIAS_MAX_BYTES = 1_048_576
+
+
+def sha256_file(path, limit=ALIAS_MAX_BYTES):
+    """sha256 hex of a small regular file, else None."""
+    try:
+        st = os.lstat(str(path))
+        if not stat.S_ISREG(st.st_mode) or st.st_size > limit:
+            return None
+        h = hashlib.sha256()
+        with open(str(path), "rb") as fh:
+            for chunk in iter(lambda: fh.read(65536), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except OSError:
+        return None
+
+
+def alias_matches(path, entry):
+    """True only for an alias we recorded: regular small file, same inode, same sha256, and
+    still flagged as a Finder alias. Anything else is somebody's real file."""
+    if not isinstance(entry, dict) or not entry.get("ino") or not entry.get("sha256"):
+        return False
+    try:
+        st = os.lstat(str(path))
+    except OSError:
+        return False
+    if (not stat.S_ISREG(st.st_mode) or st.st_size >= ALIAS_MAX_BYTES
+            or st.st_ino != entry["ino"] or sha256_file(path) != entry["sha256"]):
+        return False
+    return bool(finder_alias_flag(path))
+
+
+def _source_problem(src):
+    """Status string when src is a git repo, inside or containing one, or reached through a
+    symlink (org_archive.check_source); None when safe. Fails closed if the check is missing."""
+    try:
+        import org_archive  # noqa: E402
+        err = org_archive.check_source(src, allow_outside=True)
+    except Exception:
+        return "failed-source-check-unavailable"
+    if not err:
+        return None
+    return "skipped-git-repo" if "git" in err else "skipped-unsafe-path"
+
+
 # --------------------------------------------------------------------- plan
 def _skip_abs(extra=None):
     inbox = _inbox()
@@ -305,10 +590,15 @@ def collect_inbox_candidates(now, skip_extra=None, defer_last=True, include_rece
         skip |= {str(inbox / s) for s in DEFER_LAST}
     rows = []
     counts = {"filed": 0}
+    inbox_in_git = _inside_git(inbox)
     scan = [(t, inbox / t, False) for t in ip.inbox_types()]
     scan.append(("handoffs", inbox / "notes" / "handoffs", True))
     for tname, tdir, is_handoff in scan:
         if not tdir.is_dir():
+            continue
+        if not is_canonical(tdir):
+            rows.append({"op": "skip", "src": str(tdir), "type": tname, "name": tdir.name,
+                         "kind": "dir", "reason": "unsafe-path"})
             continue
         for e in _top_entries(tdir):
             name = e.name
@@ -331,17 +621,27 @@ def collect_inbox_candidates(now, skip_extra=None, defer_last=True, include_rece
             if str(p) in skip:
                 rows.append(dict(row, op="skip", reason="skip-list"))
                 continue
+            if not is_canonical(p):
+                rows.append(dict(row, op="skip", reason="unsafe-path"))
+                continue
+            if inbox_in_git:
+                rows.append(dict(row, op="skip", reason="git-repo"))
+                continue
             newest, has_git, trunc = walk_info(p, stop_after=now - RECENT_S)
+            if has_git:
+                rows.append(dict(row, op="skip", reason="git-repo"))
+                continue
+            if trunc:
+                rows.append(dict(row, op="skip", reason="scan-incomplete"))
+                continue
             if not include_recent and newest > now - RECENT_S:
                 rows.append(dict(row, op="skip", reason="recent"))
                 continue
             if is_handoff and newest > now - HANDOFF_FLAT_S:
                 rows.append(dict(row, op="skip", reason="handoff-7d"))
                 continue
-            row["has_git"] = has_git
+            row["has_git"] = False
             row["mtime"] = newest
-            if trunc:
-                row["walk_truncated"] = True
             rows.append(row)
     return rows, counts
 
@@ -431,11 +731,70 @@ def _within(path, root):
         return False
 
 
-def apply_rows(rows, max_moves=None, now=None, inbox=None, allow_src_roots=None, log=None):
-    """Execute "move" rows with os.rename (no overwrite). Returns the rows with a status.
+def _root_of(path, roots):
+    """The allowed root that lexically contains path, or None."""
+    for root in roots:
+        if _within(path, root):
+            return root
+    return None
 
-    status: done | skipped-<why> | failed-<why>. Never overwrites, never crosses volumes
-    (EXDEV is a failure), re-checks recency and symlinks right before each move.
+
+def _apply_one(r, now, inbox, src_roots, journal):
+    """Status for one move row; performs the rename when every check passes."""
+    src, dst = r["src"], r["dst"]
+    if not _within(dst, inbox):
+        return "failed-dst-outside-inbox"
+    sroot = _root_of(src, src_roots)
+    if sroot is None:
+        return "failed-src-outside-allowed-roots"
+    if not os.path.lexists(src):
+        return "skipped-src-missing"
+    if os.path.islink(src):
+        return "skipped-symlink"
+    if not safe_under(src, sroot) or not safe_under(dst, inbox):
+        return "skipped-unsafe-path"
+    problem = _source_problem(src)
+    if problem:
+        return problem
+    handoff = r.get("type") == "handoffs"
+    window = HANDOFF_FLAT_S if handoff else RECENT_S
+    newest, has_git, incomplete = walk_info(src, stop_after=now - window)
+    if has_git:
+        return "skipped-git-repo"
+    if incomplete:
+        return "skipped-scan-incomplete"
+    if not r.get("allow_recent"):
+        if newest > now - RECENT_S:
+            return "skipped-recent"
+        if handoff and newest > now - HANDOFF_FLAT_S:
+            return "skipped-handoff-7d"
+    if os.path.lexists(dst):
+        return "skipped-dst-exists"
+    try:
+        mkdirs_under(os.path.dirname(dst), inbox)
+    except OSError as exc:
+        return "failed-%s" % (exc.strerror or type(exc).__name__)
+    if journal is not None:
+        journal.append(dict(r, op="intent"))
+    _hook("before-rename", src, dst)
+    try:
+        rename_noreplace(src, dst)
+    except FileExistsError:
+        return "skipped-dst-exists"
+    except OSError as exc:
+        return "failed-%s" % (exc.strerror or type(exc).__name__)
+    return "done"
+
+
+def apply_rows(rows, max_moves=None, now=None, inbox=None, allow_src_roots=None, log=None,
+               journal=None, skip_done=None):
+    """Execute "move" rows with an atomic no-replace rename. Returns the rows with a status.
+
+    status: done | already-done | skipped-<why> | failed-<why>. Never overwrites (even when the
+    destination appears after the check), never crosses volumes (EXDEV is a failure), never
+    moves a git repo, and re-checks recency, the 7-day handoff rule, symlinks, canonical paths
+    and scan completeness right before each move. With a journal, an fsynced intent row precedes
+    each rename and a result row follows it. skip_done: {(src, dst)} already done (resume).
     """
     inbox = Path(inbox or _inbox())
     now = now or time.time()
@@ -447,30 +806,16 @@ def apply_rows(rows, max_moves=None, now=None, inbox=None, allow_src_roots=None,
             continue
         r = dict(r)
         src, dst = r["src"], r["dst"]
-        if max_moves is not None and done >= max_moves:
+        if skip_done and (src, dst) in skip_done:
+            r["status"] = "already-done"
+        elif max_moves is not None and done >= max_moves:
             r["status"] = "skipped-cap"
-        elif not _within(dst, inbox):
-            r["status"] = "failed-dst-outside-inbox"
-        elif not any(_within(src, root) for root in src_roots):
-            r["status"] = "failed-src-outside-allowed-roots"
-        elif not os.path.lexists(src):
-            r["status"] = "skipped-src-missing"
-        elif os.path.islink(src):
-            r["status"] = "skipped-symlink"
-        elif os.path.lexists(dst):
-            r["status"] = "skipped-dst-exists"
         else:
-            newest, _g, _t = walk_info(src, stop_after=now - RECENT_S)
-            if newest > now - RECENT_S and not r.get("allow_recent"):
-                r["status"] = "skipped-recent"
-            else:
-                try:
-                    os.makedirs(os.path.dirname(dst), exist_ok=True)
-                    os.rename(src, dst)
-                    r["status"] = "done"
-                    done += 1
-                except OSError as exc:
-                    r["status"] = "failed-%s" % (exc.strerror or type(exc).__name__)
+            r["status"] = _apply_one(r, now, inbox, src_roots, journal)
+            if r["status"] == "done":
+                done += 1
+        if journal is not None:
+            journal.append(r, sync=r["status"] == "done")
         if log:
             log("%s %s -> %s" % (r["status"], src, dst))
         out.append(r)
@@ -478,35 +823,52 @@ def apply_rows(rows, max_moves=None, now=None, inbox=None, allow_src_roots=None,
 
 
 def tracked_aliases(state_file=None):
-    """{alias path: inode} of Desktop aliases the daily sweep created (org/state)."""
+    """{alias path: entry} of Desktop aliases the daily sweep created (org/state). An entry
+    carries the inode and sha256 recorded at creation."""
     try:
         data = json.loads(Path(state_file or (HERE / "state" / "desktop-aliases.json")).read_text())
     except (OSError, ValueError):
         return {}
-    return {e["alias"]: e.get("ino") for e in data if isinstance(e, dict) and "alias" in e}
+    return {e["alias"]: e for e in data if isinstance(e, dict) and "alias" in e}
 
 
 def _is_our_alias(path, tracked):
-    try:
-        st = os.lstat(path)
-    except OSError:
-        return False
-    return (path in tracked and os.path.isfile(path) and not os.path.islink(path)
-            and st.st_size < 1_048_576 and tracked[path] in (None, st.st_ino))
+    """A tracked alias is removable only when inode and sha256 still match and Finder still
+    flags it as an alias."""
+    return alias_matches(path, tracked.get(path))
 
 
-def undo_rows(rows, log=None, alias_state=None):
-    """Reverse "done" rows (newest first) without overwriting. Returns result rows.
+def undo_rows(rows, log=None, alias_state=None, inbox=None, allow_src_roots=None, journal=None):
+    """Reverse "done" rows (newest first) with a no-replace rename. Returns result rows.
 
-    A Desktop alias the sweep left at the original path is removed first (only when it is
-    tracked, small, and the same inode); any other occupant blocks the restore.
+    A Desktop alias the sweep left at the original path is removed first, but only when it is
+    tracked and still verifiably ours (inode + sha256 + Finder alias flag); any other occupant
+    blocks the restore. Paths must be canonical and inside the Inbox / allowed source roots.
     """
+    inbox = Path(inbox or _inbox())
+    if allow_src_roots is None:
+        allow_src_roots = [HOME / "Desktop", HOME / "Downloads"]
+    src_roots = [inbox] + [Path(p) for p in allow_src_roots]
     tracked = tracked_aliases(alias_state)
+    seen, todo = set(), []
+    for x in rows:
+        if x.get("status") == "done" and x.get("op", "move") == "move":
+            key = (x["src"], x["dst"])
+            if key not in seen:
+                seen.add(key)
+                todo.append(x)
     res = []
-    for r in reversed([x for x in rows if x.get("status") == "done"]):
+    for r in reversed(todo):
         r = dict(r)
         src, dst = r["src"], r["dst"]
-        if not os.path.lexists(dst):
+        sroot = _root_of(src, src_roots)
+        if not _within(dst, inbox):
+            r["undo"] = "failed-dst-outside-inbox"
+        elif sroot is None:
+            r["undo"] = "failed-src-outside-allowed-roots"
+        elif not safe_under(dst, inbox) or not safe_under(os.path.dirname(src), sroot):
+            r["undo"] = "skipped-unsafe-path"
+        elif not os.path.lexists(dst):
             r["undo"] = "skipped-item-missing"
         elif os.path.lexists(src) and not _is_our_alias(src, tracked):
             r["undo"] = "skipped-original-path-occupied"
@@ -514,12 +876,17 @@ def undo_rows(rows, log=None, alias_state=None):
             try:
                 if os.path.lexists(src):
                     os.remove(src)
-                os.makedirs(os.path.dirname(src), exist_ok=True)
-                os.rename(dst, src)
+                mkdirs_under(os.path.dirname(src), sroot)
+                _hook("before-undo-rename", dst, src)
+                rename_noreplace(dst, src)
                 r["undo"] = "restored"
                 _prune_empty(os.path.dirname(dst))
+            except FileExistsError:
+                r["undo"] = "skipped-original-path-occupied"
             except OSError as exc:
                 r["undo"] = "failed-%s" % (exc.strerror or type(exc).__name__)
+        if journal is not None:
+            journal.append(dict(r, op="undo"), sync=r["undo"] == "restored")
         if log:
             log("undo %s %s" % (r["undo"], src))
         res.append(r)
@@ -588,26 +955,50 @@ def main(argv=None):
         return 0
     if a.cmd == "apply":
         rows = read_manifest(a.manifest)
-        res = apply_rows(rows, max_moves=a.max, log=log)
-        out = applied_path(a.manifest)
-        write_manifest([{"op": "meta", "applied": time.strftime("%Y-%m-%dT%H:%M:%S"),
-                         "source_manifest": str(a.manifest)}] + res, out)
+        jpath = applied_path(a.manifest)
+        resumed = jpath.exists()
+        recon = reconcile_journal(jpath, log=log)
+        done_keys = journal_done_keys(jpath)
+        journal = Journal(jpath)
+        journal.append({"op": "meta", "applied": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                        "source_manifest": str(a.manifest), "resumed": resumed,
+                        "reconciled": recon})
+        try:
+            import org_archive  # noqa: E402
+            lock = org_archive.archive_lock()
+        except Exception:
+            lock = None
+        try:
+            if lock is not None:
+                with lock:
+                    res = apply_rows(rows, max_moves=a.max, log=log, journal=journal,
+                                     skip_done=done_keys,
+                                     allow_src_roots=[HOME / "Desktop", HOME / "Downloads"])
+            else:
+                res = apply_rows(rows, max_moves=a.max, log=log, journal=journal, skip_done=done_keys,
+                                 allow_src_roots=[HOME / "Desktop", HOME / "Downloads"])
+        finally:
+            journal.append({"op": "end"})
+            journal.close()
         counts = {}
         for r in res:
             counts[r["status"]] = counts.get(r["status"], 0) + 1
         print(json.dumps(counts, indent=1))
-        print("applied:", out, " undo: org_router.py undo --manifest", out)
+        print("applied:", jpath, " undo: org_router.py undo --manifest", jpath)
         return 0
     if a.cmd == "undo":
         m = Path(a.manifest)
         sib = applied_path(m)
-        rows = read_manifest(sib if sib.exists() and not str(m).endswith(".applied.jsonl") else m)
-        res = undo_rows(rows, log=log)
+        src_journal = sib if sib.exists() and not str(m).endswith(".applied.jsonl") else m
+        reconcile_journal(src_journal, log=log)
+        rows = read_journal(src_journal)
+        out = Journal(str(m) + ".undone.jsonl")
+        out.append({"op": "meta", "undone": time.strftime("%Y-%m-%dT%H:%M:%S")})
+        res = undo_rows(rows, log=log, journal=out)
+        out.close()
         counts = {}
         for r in res:
             counts[r["undo"]] = counts.get(r["undo"], 0) + 1
-        write_manifest([{"op": "meta", "undone": time.strftime("%Y-%m-%dT%H:%M:%S")}] + res,
-                       str(m) + ".undone.jsonl")
         print(json.dumps(counts, indent=1))
         return 0
     return 2

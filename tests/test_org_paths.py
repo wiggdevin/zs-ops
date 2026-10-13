@@ -38,13 +38,31 @@ with tempfile.TemporaryDirectory() as td:
     d = dt.date(2026, 10, 13)
     p = ip.allocate("mm", "plans", "Source Kits!", ext="md", date=d)
     check("path shape", str(p) == str(ip.INBOX / "plans/mishmash/2026-10/2026-10-13-mishmash-source-kits.md"), p)
-    check("parent created", p.parent.is_dir() and not p.exists())
+    check("parent created, name reserved by an empty file", p.parent.is_dir() and p.is_file()
+          and p.stat().st_size == 0)
     p.write_text("x")
     p2 = ip.allocate("mishmash", "plans", "source kits", ext=".md", date=d)
     check("collision -02", p2.name.endswith("source-kits-02.md"), p2.name)
     p2.write_text("x")
     p3 = ip.allocate("mishmash", "plans", "source kits", ext="md", date=d)
     check("collision -03", p3.name.endswith("source-kits-03.md"), p3.name)
+    r1 = ip.allocate("sasha", "notes", "reserve me", ext="md", date=d)
+    r2 = ip.allocate("sasha", "notes", "reserve me", ext="md", date=d)   # r1 never written
+    check("unwritten allocation still reserves its name", r1 != r2 and r2.name.endswith("reserve-me-02.md"), (r1, r2))
+    # a file that appears at the candidate name between our look and our create is skipped
+    import threading
+    taken = ip.INBOX / "notes/sasha/2026-10/2026-10-13-sasha-racy.md"
+    taken.write_text("theirs")
+    r3 = ip.allocate("sasha", "notes", "racy", ext="md", date=d)
+    check("exclusive create never reuses an existing file", r3.name.endswith("racy-02.md")
+          and taken.read_text() == "theirs", r3)
+    results = []
+    def grab():
+        results.append(ip.allocate("sasha", "notes", "parallel", ext="md", date=d))
+    ts = [threading.Thread(target=grab) for _ in range(8)]
+    [t.start() for t in ts]
+    [t.join() for t in ts]
+    check("parallel allocations get distinct names", len({str(x) for x in results}) == 8, results)
     h = ip.allocate("sasha", "handoffs", "init prompt", ext="md", date=d)
     check("handoffs maps to notes/handoffs", "/notes/handoffs/sasha/2026-10/" in str(h), h)
     u = ip.allocate("who knows", "misc", "thing", ext="txt", date=d)
@@ -90,7 +108,8 @@ with tempfile.TemporaryDirectory() as td:
     check("find spans new layout, flat handoff and legacy flat", newer in got and flat_ho in got and legacy in got)
     check("fresh before live before legacy", got.index(newer) < got.index(flat_ho) < got.index(legacy))
     check("find excludes other projects", other not in got)
-    check("find type=handoffs", ip.find(type="handoffs", project="sasha") == [flat_ho])
+    found_h = ip.find(type="handoffs", project="sasha")
+    check("find type=handoffs", flat_ho in found_h and h in found_h and len(found_h) == 2, found_h)
     check("find query", ip.find(query="old audit") == [legacy])
     check("find latest limit", len(ip.find(project="sasha", limit=1)) == 1)
     for d_ in (root / "notes", root / "notes/sasha", root / "notes/sasha/2026-10"):

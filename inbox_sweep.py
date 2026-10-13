@@ -27,6 +27,7 @@ Log:   ~/Library/Logs/zs-ai-os/inbox-sweep.log
 """
 from __future__ import annotations
 
+import contextlib
 import datetime as _dt
 import fcntl
 import json
@@ -264,18 +265,7 @@ def _save_json(path: Path, data) -> None:
 # ------------------------------------------------------- Desktop aliases
 def finder_alias_flag(path: Path) -> bool:
     """True when com.apple.FinderInfo marks the file as a Finder alias (flag 0x8000)."""
-    try:
-        out = subprocess.run(["/usr/bin/xattr", "-px", "com.apple.FinderInfo", str(path)],
-                             capture_output=True, text=True, timeout=5)
-    except (OSError, subprocess.TimeoutExpired):
-        return False
-    if out.returncode != 0:
-        return False
-    try:
-        raw = bytes.fromhex("".join(out.stdout.split()))
-    except ValueError:
-        return False
-    return len(raw) >= 10 and bool(int.from_bytes(raw[8:10], "big") & 0x8000)
+    return rt.finder_alias_flag(path)
 
 
 def is_alias_file(path: Path, tracked=None) -> bool:
@@ -309,8 +299,9 @@ def make_finder_alias(target: Path, folder: Path, name: str):
 
 
 def expire_desktop_aliases(now: float, lines, stamp: str, dry: bool, alias_state=None):
-    """Remove tracked aliases older than 3 days. Only removes a tracked, small, regular file
-    whose inode still matches what we recorded; anything else is dropped from tracking."""
+    """Remove tracked aliases older than 3 days. An alias is removed only when it is still
+    verifiably ours: same inode and sha256 as recorded at creation, a small regular file, and
+    still flagged as a Finder alias. Anything else is left on disk, logged, and untracked."""
     path = _state_path("desktop-aliases.json")
     entries = alias_state if alias_state is not None else _load_json(path, [])
     keep, removed = [], 0
@@ -319,15 +310,12 @@ def expire_desktop_aliases(now: float, lines, stamp: str, dry: bool, alias_state
         if now - e.get("created", now) < ALIAS_TTL_S:
             keep.append(e)
             continue
-        try:
-            st = os.lstat(str(alias))
-        except OSError:
+        if not os.path.lexists(str(alias)):
             lines.append(f"{stamp} alias already gone {alias}")
             continue
-        safe = (not os.path.islink(str(alias)) and os.path.isfile(str(alias))
-                and st.st_size < 1_048_576 and st.st_ino == e.get("ino", st.st_ino))
-        if not safe:
-            lines.append(f"{stamp} WARN alias {alias} changed since creation; untracked, not removed")
+        if not rt.alias_matches(str(alias), e):
+            lines.append(f"{stamp} WARN alias {alias} no longer matches what was created "
+                         "(inode, sha256 or alias flag); left in place and untracked")
             continue
         lines.append(f"{stamp} {'DRY ' if dry else ''}EXPIRE alias {alias} (target {e.get('target')})")
         if dry:
@@ -345,12 +333,14 @@ def expire_desktop_aliases(now: float, lines, stamp: str, dry: bool, alias_state
 
 
 def record_alias(entries, alias: Path, target: str, now: float):
+    """Track a created alias with its inode and sha256 (needed before it may be removed)."""
     try:
         ino = os.lstat(str(alias)).st_ino
     except OSError:
         ino = None
     entries[:] = [e for e in entries if e["alias"] != str(alias)]
-    entries.append({"alias": str(alias), "target": target, "created": now, "ino": ino})
+    entries.append({"alias": str(alias), "target": target, "created": now, "ino": ino,
+                    "sha256": rt.sha256_file(str(alias))})
 
 
 # ----------------------------------------------------------- external src
@@ -360,6 +350,9 @@ def external_rows(now: float, lines, stamp: str, alias_entries):
     tracked = {e["alias"]: e.get("ino") for e in alias_entries}
     for source, root, min_age in (("desktop", DESKTOP, 0), ("downloads", DOWNLOADS, DOWNLOADS_MIN_AGE_S)):
         if not root.is_dir():
+            continue
+        if not rt.is_canonical(root):
+            lines.append(f"{stamp} WARN {root} is or sits behind a symlink; not scanned")
             continue
         entries, warn = _safe_listdir(root)
         if warn:
@@ -390,7 +383,7 @@ def external_rows(now: float, lines, stamp: str, alias_entries):
 
 
 def _uniquify_dst(row: dict) -> None:
-    """External files never overwrite: add a -YYYYMMDD-HHMMSS suffix on a name clash."""
+    """A name clash gets a -YYYYMMDD-HHMMSS suffix (the apply step also refuses to overwrite)."""
     dst = Path(row["dst"])
     if os.path.lexists(str(dst)):
         row["dst"] = str(_with_collision_suffix(dst))
@@ -663,6 +656,10 @@ def run(dry=False, use_jev=True, do_ingest=True, do_screens=True, do_cold=True, 
     warnings = []
     alias_maker = alias_maker or make_finder_alias
 
+    if not dry:
+        recon = rt.reconcile_all(MANIFEST_DIR, log=lambda m: lines.append(f"{stamp} WARN {m}"))
+        if recon:
+            warnings.append(f"reconciled {recon} interrupted move(s)")
     entries, expired = expire_desktop_aliases(now, lines, stamp, dry)
     summary["desktop aliases expired"] = expired
 
@@ -673,7 +670,7 @@ def run(dry=False, use_jev=True, do_ingest=True, do_screens=True, do_cold=True, 
     skips = [r for r in rows if r["op"] == "skip"]
     rt.resolve_rows(rows, use_jev=use_jev, evaluate=evaluate, log=lambda m: lines.append(f"{stamp} {m}"))
     for r in rows:
-        if r["op"] == "move" and r.get("source"):
+        if r["op"] == "move":
             _uniquify_dst(r)
     moves = [r for r in rows if r["op"] == "move"]
 
@@ -683,13 +680,19 @@ def run(dry=False, use_jev=True, do_ingest=True, do_screens=True, do_cold=True, 
             lines.append(f"{stamp} DRY {r['src']} -> {r['dst']} ({r['basis']})")
         results = []
     else:
-        results = rt.apply_rows(moves, max_moves=MAX_MOVES, now=now, inbox=INBOX,
-                                allow_src_roots=[DESKTOP, DOWNLOADS],
-                                log=lambda m: lines.append(f"{stamp} {m}"))
+        # plan first, then a journal: intent row before each rename, result row after it
         rt.write_manifest([{"op": "meta", "created": stamp, "kind": "daily-sweep",
-                            "undo": f"org_router.py undo --manifest {manifest_path}"}] + skips + results,
+                            "undo": f"org_router.py undo --manifest {manifest_path}"}] + skips + moves,
                           manifest_path)
-        # undo reads <manifest>.applied.jsonl when present; the sweep manifest is itself "applied"
+        journal = rt.Journal(rt.applied_path(manifest_path))
+        journal.append({"op": "meta", "applied": stamp, "source_manifest": str(manifest_path)})
+        try:
+            results = rt.apply_rows(moves, max_moves=MAX_MOVES, now=now, inbox=INBOX,
+                                    allow_src_roots=[DESKTOP, DOWNLOADS], journal=journal,
+                                    log=lambda m: lines.append(f"{stamp} {m}"))
+        finally:
+            journal.append({"op": "end"})
+            journal.close()
     done = [r for r in results if r["status"] == "done"]
     # Finder alias for items routed from the Desktop
     made = 0
@@ -761,10 +764,18 @@ def main(argv=None) -> int:
     except OSError:
         print("inbox_sweep: another run holds the lock; exiting")
         return 0
-    lines, warnings, _summary = run(
-        dry=dry, use_jev="--no-jev" not in argv, do_ingest="--no-ingest" not in argv,
-        do_screens="--no-screenshots" not in argv, do_cold="--no-cold" not in argv,
-        do_reap="--reap-archive" in argv)
+    lock = contextlib.nullcontext()
+    if not dry:  # one mover at a time: the verified-archive job holds the same lock
+        try:
+            import org_archive  # noqa: E402
+            lock = org_archive.archive_lock()
+        except Exception:
+            pass
+    with lock:
+        lines, warnings, _summary = run(
+            dry=dry, use_jev="--no-jev" not in argv, do_ingest="--no-ingest" not in argv,
+            do_screens="--no-screenshots" not in argv, do_cold="--no-cold" not in argv,
+            do_reap="--reap-archive" in argv)
     stamp = time.strftime("%Y-%m-%d %H:%M:%S")
     _write_log(lines, stamp)
     print("\n".join(lines))

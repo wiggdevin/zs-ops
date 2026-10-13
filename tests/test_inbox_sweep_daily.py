@@ -58,12 +58,18 @@ class FakeRun:
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
 
+FLAGGED = set()   # paths the fake "Finder" marks as aliases (stands in for the FinderInfo flag)
+rt.finder_alias_flag = lambda p: str(p) in FLAGGED
+
+
 def fake_alias(target, folder, name):
     (Path(folder) / name).write_text("ALIAS->" + str(target))
+    FLAGGED.add(str(Path(folder) / name))
     return None
 
 
 with tempfile.TemporaryDirectory() as td:
+    td = os.path.realpath(td)   # the router refuses symlinked ancestors (/var -> /private/var)
     home = Path(td) / "home"
     m.configure(home=home)
     m.STATE_DIR = Path(td) / "state"
@@ -113,20 +119,28 @@ with tempfile.TemporaryDirectory() as td:
     check("recent handoff stays flat", (inbox / "notes/handoffs/2026-10-12-sasha-recent.md").exists())
     check("old handoff filed", any((inbox / "notes/handoffs/sasha").glob("*/2026-09-20-sasha-old.md")))
     mf = list(m.MANIFEST_DIR.glob("*-sweep.jsonl"))
-    check("manifest written", len(mf) == 1)
-    rows = rt.read_manifest(mf[0])
+    check("plan manifest written before the moves", len(mf) == 1
+          and any(r.get("op") == "move" and "status" not in r for r in rt.read_manifest(mf[0])))
+    jr = rt.applied_path(mf[0])
+    rows = rt.read_journal(jr)
+    ops = [r.get("op") for r in rows]
+    check("journal has an intent before each done row",
+          ops.count("intent") == sum(1 for r in rows if r.get("status") == "done") and ops[-1] == "end"
+          and all(ops.index("intent") < i for i, r in enumerate(rows) if r.get("status") == "done"))
     check("manifest has done rows and skip reasons", any(r.get("status") == "done" for r in rows)
-          and any(r.get("reason") == "recent" for r in rows))
+          and any(r.get("reason") == "recent" for r in rt.read_manifest(mf[0])))
     report = list((inbox / "notes/mac-ops").glob("*/*-mac-ops-report-cleanup.md"))
     check("daily report written", len(report) == 1 and "items moved" in report[0].read_text())
 
     # ---- undo through the manifest restores everything
-    res = rt.undo_rows([r for r in rows if r.get("status") == "done"], alias_state=m.STATE_DIR / "desktop-aliases.json")
+    res = rt.undo_rows([r for r in rows if r.get("status") == "done"], alias_state=m.STATE_DIR / "desktop-aliases.json",
+                       inbox=inbox, allow_src_roots=[m.DESKTOP, m.DOWNLOADS])
     check("manifest undo restores originals", (home / "Downloads/spindle-brief.pdf").exists()
           and (inbox / "notes/handoffs/2026-09-20-sasha-old.md").exists()
           and all(r["undo"] == "restored" for r in res), [r["undo"] for r in res])
 
     # ---- second run: aliases are tracked, not re-ingested; nothing else to do
+    FLAGGED.discard(str(home / "Desktop/sasha-notes.md"))      # the restored original is a plain file
     touch(home / "Desktop/sasha-notes.md", age_s=3600)
     m.run(use_jev=False, do_ingest=False, do_screens=False, do_cold=False, now=now, alias_maker=fake_alias)
     tracked = json.loads((m.STATE_DIR / "desktop-aliases.json").read_text())
@@ -151,7 +165,7 @@ with tempfile.TemporaryDirectory() as td:
     m._save_json(m.STATE_DIR / "desktop-aliases.json", entries)
     lines2 = []
     m.expire_desktop_aliases(now, lines2, "T", dry=False)
-    check("replaced file is not deleted by expiry", other.exists() and any("changed" in l for l in lines2))
+    check("replaced file is not deleted by expiry", other.exists() and any("no longer matches" in l for l in lines2))
     big = home / "Desktop/bigfile.md"
     big.write_text("y" * 2_000_000)
     ino = os.stat(str(big)).st_ino
@@ -159,6 +173,55 @@ with tempfile.TemporaryDirectory() as td:
                  [{"alias": str(big), "target": "x", "created": now - 9 * DAY, "ino": ino}])
     m.expire_desktop_aliases(now, [], "T", dry=False)
     check("large file is never treated as an alias", big.exists())
+
+    # ---- alias removal needs inode + sha256 + Finder alias flag (BLOCK 5)
+    tracked_now = []
+    a_ok = home / "Desktop/alias-ok.md"
+    fake_alias(Path("/x/target"), home / "Desktop", "alias-ok.md")
+    m.record_alias(tracked_now, a_ok, "/x/target", now - 9 * DAY)
+    e_ok = tracked_now[-1]
+    check("alias entry records inode and sha256", e_ok["ino"] == os.stat(str(a_ok)).st_ino
+          and e_ok["sha256"] == rt.sha256_file(str(a_ok)) and len(e_ok["sha256"]) == 64)
+    check("untouched alias matches", rt.alias_matches(str(a_ok), e_ok))
+    a_edit = home / "Desktop/alias-edit.md"
+    fake_alias(Path("/x/t2"), home / "Desktop", "alias-edit.md")
+    m.record_alias(tracked_now, a_edit, "/x/t2", now - 9 * DAY)
+    a_edit.write_text("REAL USER CONTENT")                      # same inode, new content
+    a_flag = home / "Desktop/alias-noflag.md"
+    fake_alias(Path("/x/t3"), home / "Desktop", "alias-noflag.md")
+    m.record_alias(tracked_now, a_flag, "/x/t3", now - 9 * DAY)
+    FLAGGED.discard(str(a_flag))                                # no longer a Finder alias
+    a_old = home / "Desktop/alias-legacy.md"
+    fake_alias(Path("/x/t4"), home / "Desktop", "alias-legacy.md")
+    m.record_alias(tracked_now, a_old, "/x/t4", now - 9 * DAY)
+    tracked_now[-1].pop("sha256")                               # entry without a hash
+    lines6 = []
+    keep6, removed6 = m.expire_desktop_aliases(now, lines6, "T", dry=False, alias_state=list(tracked_now))
+    check("only the verified alias is removed", removed6 == 1 and not a_ok.exists() and a_edit.exists()
+          and a_flag.exists() and a_old.exists(), lines6)
+    check("edited file kept and logged", a_edit.read_text() == "REAL USER CONTENT"
+          and sum("no longer matches" in l for l in lines6) == 3, lines6)
+    # undo removes a tracked alias only when it is still verifiably ours
+    st_file = m.STATE_DIR / "desktop-aliases.json"
+    m._save_json(st_file, tracked_now)
+    mv_dst = inbox / "notes/sasha/2026-10/alias-edit.md"
+    touch(mv_dst, text="MOVED")
+    row_u = {"op": "move", "src": str(a_edit), "dst": str(mv_dst), "status": "done", "type": "notes",
+             "name": "alias-edit.md"}
+    und6 = rt.undo_rows([row_u], alias_state=st_file, inbox=inbox, allow_src_roots=[m.DESKTOP, m.DOWNLOADS])
+    check("undo leaves an edited 'alias' alone", und6[0]["undo"] == "skipped-original-path-occupied"
+          and a_edit.read_text() == "REAL USER CONTENT" and mv_dst.exists(), und6)
+
+    # ---- startup reconcile: an unmatched intent from a crashed run is resolved
+    moved_dst = touch(inbox / "notes/sasha/2026-10/zz-crash-src.md", text="C")
+    jpath = m.MANIFEST_DIR / "20200101-000000-sweep.jsonl.applied.jsonl"
+    j = rt.Journal(jpath)
+    j.append({"op": "intent", "op2": 1, "src": str(inbox / "notes/zz-crash-src.md"), "dst": str(moved_dst),
+              "type": "notes", "name": "zz-crash-src.md"})
+    j.close()
+    m.run(use_jev=False, do_ingest=False, do_screens=False, do_cold=False, now=now + 5, alias_maker=fake_alias)
+    last = rt.read_journal(jpath)[-1]
+    check("sweep reconciles interrupted moves at startup", last.get("status") == "done" and last.get("reconciled"), last)
 
     # ---- cold candidates (>30 days by newest mtime inside the bundle), pins, holds
     old_b = inbox / "notes/sasha/2026-08/old-bundle"
