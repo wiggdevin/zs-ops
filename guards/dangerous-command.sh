@@ -58,11 +58,11 @@ emit_allow() {
       exit 0
       ;;
     cursor)
-      jq -nc '{permission:"allow"}'
+      printf '%s\n' '{"permission":"allow"}'
       exit 0
       ;;
     antigravity)
-      jq -nc '{decision:"allow"}'
+      printf '%s\n' '{"decision":"allow"}'
       exit 0
       ;;
   esac
@@ -141,10 +141,21 @@ OP_PATTERNS=(
   "(^|[;&|(])[[:space:]]*\\\\op([[:space:]]|$)"
 )
 
+# One grep per category instead of one per pattern (perf, 2026-10-13; the Claude
+# hook has done this since 2026-07-31). `grep -e p1 -e p2 ...` matches iff some
+# single pattern matches, with the same engine and flags, so it is an exact
+# pre-filter: a safe command skips the loops, and a match still runs the loop
+# so the BLOCKED message names the pattern.
+any_match() {
+  local args=() p
+  for p in "$@"; do args+=(-e "$p"); done
+  printf '%s' "$COMMAND" | grep -qE "${args[@]}"
+}
+
 match_policy() {
   local pattern
 
-  for pattern in "${DANGEROUS_PATTERNS[@]}"; do
+  any_match "${DANGEROUS_PATTERNS[@]}" && for pattern in "${DANGEROUS_PATTERNS[@]}"; do
     if printf '%s' "$COMMAND" | grep -qE "$pattern"; then
       BLOCK_REASON="BLOCKED: '$COMMAND' matches dangerous pattern '$pattern'. The user has prevented you from doing this."
       return 1
@@ -153,15 +164,17 @@ match_policy() {
 
   # Interpreters are blocked only when the same command also names a protected
   # secret path. Normal Python, Node, Ruby, and similar work remains allowed.
-  if printf '%s' "$COMMAND" | grep -qE "$INTERPRETER_COMMAND_PATTERN" \
-     && printf '%s' "$COMMAND" | grep -qE "$PROTECTED_SECRET_PATH_PATTERN"; then
+  # The rare protected-path test runs first so ordinary interpreter use costs one grep.
+  if printf '%s' "$COMMAND" | grep -qE "$PROTECTED_SECRET_PATH_PATTERN" \
+     && printf '%s' "$COMMAND" | grep -qE "$INTERPRETER_COMMAND_PATTERN"; then
     BLOCK_REASON="BLOCKED: '$COMMAND' matches interpreter pattern '$INTERPRETER_COMMAND_PATTERN' and protected-secret-path pattern '$PROTECTED_SECRET_PATH_PATTERN'. Use ZS Vault metadata/access paths instead of reading credential files."
     return 1
   fi
 
   # Destructive git is default-deny unless the command carries the literal
   # ZS_ALLOW_GIT=1 token (agents may self-apply it after stashing work that is not theirs, 2026-09-22). Absolute patterns still win above.
-  if ! printf '%s' "$COMMAND" | grep -qE 'ZS_ALLOW_GIT=1([[:space:]]|$)'; then
+  if any_match "${GIT_DESTRUCTIVE_PATTERNS[@]}" \
+     && ! printf '%s' "$COMMAND" | grep -qE 'ZS_ALLOW_GIT=1([[:space:]]|$)'; then
     for pattern in "${GIT_DESTRUCTIVE_PATTERNS[@]}"; do
       if printf '%s' "$COMMAND" | grep -qE "$pattern"; then
         BLOCK_REASON="BLOCKED: '$COMMAND' matches git-destructive pattern '$pattern'. Deliberate use (ONLY when the user explicitly asked this session): prefix with ZS_ALLOW_GIT=1"
@@ -172,7 +185,8 @@ match_policy() {
 
   # 1Password CLI is default-deny unless the command carries the literal
   # human-authorized ZS_ALLOW_OP=1 token. ZS Vault remains the secrets source.
-  if ! printf '%s' "$COMMAND" | grep -qE 'ZS_ALLOW_OP=1([[:space:]]|$)'; then
+  if any_match "${OP_PATTERNS[@]}" \
+     && ! printf '%s' "$COMMAND" | grep -qE 'ZS_ALLOW_OP=1([[:space:]]|$)'; then
     for pattern in "${OP_PATTERNS[@]}"; do
       if printf '%s' "$COMMAND" | grep -qE "$pattern"; then
         BLOCK_REASON="BLOCKED: '$COMMAND' matches op/1Password pattern '$pattern'. Deliberate use: prefix with ZS_ALLOW_OP=1 (e.g. ZS_ALLOW_OP=1 op item get \"GitHub\"). Secrets SoT: ZS Vault."

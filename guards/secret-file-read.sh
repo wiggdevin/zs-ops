@@ -43,9 +43,9 @@ if ! STRINGS=$(printf '%s' "$INPUT" | jq -er '
   deny "invalid PreToolUse payload for secret-file-read.sh"
 fi
 
-while IFS= read -r value; do
-  # APFS is case-insensitive, so match a lowercased copy.
-  v=$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')
+# APFS is case-insensitive, so match a lowercased copy (one tr for all values).
+STRINGS=$(printf '%s' "$STRINGS" | tr '[:upper:]' '[:lower:]')
+while IFS= read -r v; do
   # Trailing separators (~/.zsvault/) must not dodge the directory rules.
   while [ "${#v}" -gt 1 ] && [ "${v%/}" != "$v" ]; do v=${v%/}; done
   case "$v" in
@@ -59,4 +59,4 @@ while IFS= read -r value; do
   esac
 done <<< "$STRINGS"
 
-jq -nc '{decision:"allow"}'
+printf '%s\n' '{"decision":"allow"}'

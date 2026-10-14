@@ -205,6 +205,14 @@ for lane in claude codex cursor antigravity hermes; do
   run_case "$lane" op-override allow "$(payload_for "$lane" 'ZS_ALLOW_OP=1 op item get GitHub')"
   run_case "$lane" sudo-absolute block "$(payload_for "$lane" 'sudo ls')"
   run_case "$lane" sudo-absolute-with-overrides block "$(payload_for "$lane" 'ZS_ALLOW_GIT=1 ZS_ALLOW_OP=1 sudo ls')"
+  # Late patterns in each list, so the one-grep pre-filter is exercised (2026-10-13).
+  run_case "$lane" chmod-777 block "$(payload_for "$lane" 'chmod -R 777 /tmp/x')"
+  run_case "$lane" fork-bomb block "$(payload_for "$lane" ':(){ :|:& };:')"
+  run_case "$lane" git-push-short-force block "$(payload_for "$lane" 'git push origin main -f')"
+  run_case "$lane" op-absolute-path block "$(payload_for "$lane" '/usr/local/bin/op item get x')"
+  run_case "$lane" op-second-line block "$(payload_for "$lane" $'echo hi\nop item get x')"
+  run_case "$lane" interpreter-ssh-path block "$(payload_for "$lane" 'node -e "require(\"fs\").readFileSync(\"/x/.ssh/id_rsa\")"')"
+  run_case "$lane" interpreter-plain allow "$(payload_for "$lane" 'node scripts/build.mjs --out dist')"
 done
 
 run_argument_case unknown-lane not-a-lane
