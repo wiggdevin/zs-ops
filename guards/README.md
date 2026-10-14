@@ -73,6 +73,8 @@ Cursor, in `~/.cursor/hooks.json`:
 
 Antigravity global registration belongs in `~/.gemini/config/hooks.json` (the shared path used by the CLI backend). Do not keep the global guard in the legacy `~/.gemini/hooks.json`: Antigravity CLI 1.1.11 can list/load that legacy definition without dispatching it at the real tool boundary. Use `<workspace>/.agents/hooks.json` only for intentionally workspace-local hooks.
 
+The same file also registers two Claude hooks in agy mode (2026-10-13): `~/.claude/hooks/filter-test-output.py antigravity` (PreToolUse `run_command`, rewrites plain test runs through agy's `overwrite`) and `~/.claude/hooks/check-done-claims.py antigravity` (Stop; Jev checks "done" claims and answers `{"decision": "continue"}` once per user turn). The Jev subagent router is not ported: agy subagents ran in 11 of 407 conversations and only ever chose Flash.
+
 ```json
 {
   "zs-dangerous-command": {
