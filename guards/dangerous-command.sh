@@ -39,18 +39,31 @@ extract_command() {
         | select(type == "string" and length > 0)'
       ;;
     antigravity)
+      # manage_task send_input types text into a running shell, so that text is
+      # checked like a command; its other actions carry no command (2026-10-13).
+      # Known limit: each send_input is checked alone, so a command split across
+      # two inputs ("su", then "do ls") is not seen whole. Like every pattern
+      # here, this guard is lexical, not a sandbox.
       filter='select(type == "object")
         | .toolCall
         | select(type == "object")
+        | . as $call
         | .args
         | select(type == "object")
-        | .CommandLine
+        | if ($call.name // "") == "manage_task" then
+            if .Action == "send_input" then
+              (.Input | if . == "" then $none else . end)
+            else $none end
+          else .CommandLine end
         | select(type == "string" and length > 0)'
       ;;
   esac
 
-  COMMAND=$(printf '%s' "$INPUT" | jq -er "$filter" 2>/dev/null)
+  COMMAND=$(printf '%s' "$INPUT" | jq -er --arg none "$NO_COMMAND" "$filter" 2>/dev/null)
 }
+
+# Sentinel for a manage_task call that runs nothing; it is allowed unchecked.
+NO_COMMAND="__zs_guard_no_command__"
 
 emit_allow() {
   case "$LANE" in
@@ -58,11 +71,11 @@ emit_allow() {
       exit 0
       ;;
     cursor)
-      jq -nc '{permission:"allow"}'
+      printf '%s\n' '{"permission":"allow"}'
       exit 0
       ;;
     antigravity)
-      jq -nc '{decision:"allow"}'
+      printf '%s\n' '{"decision":"allow"}'
       exit 0
       ;;
   esac
@@ -105,10 +118,12 @@ DANGEROUS_PATTERNS=(
   # Pipe-to-shell supply-chain execution.
   "(curl|wget)[[:space:]].*\\|[[:space:]]*(sudo[[:space:]]+)?(bash|sh|zsh|fish)([[:space:]]|\$)"
 
-  # Privilege, device, and filesystem destruction.
-  "(^|[[:space:]])sudo[[:space:]]"
+  # Privilege, device, and filesystem destruction. Path-qualified sudo and the
+  # Keychain password dump came over from the Claude hook on 2026-10-13 (drift).
+  "(^|[[:space:]])([^[:space:]]*/)?sudo[[:space:]]"
   "chmod[[:space:]]+([-a-zA-Z]+[[:space:]]+)*0?777"
   "dd[[:space:]]+.*of=/dev/"
+  "(^|[^[:alnum:]_.-])([^[:space:]]*/)?security[[:space:]]+(find-(generic|internet)-password|export)([[:space:]]+[^[:space:]]+)*[[:space:]]+[\"']?-[a-zA-Z]*[gw]"
   "(^|[[:space:]])mkfs(\\.|[[:space:]])"
   ">[[:space:]]*/dev/(sd|disk|nvme|hd)"
   ":[[:space:]]*\\(\\)[[:space:]]*\\{[[:space:]]*:[[:space:]]*\\|[[:space:]]*:"
@@ -118,6 +133,12 @@ DANGEROUS_PATTERNS=(
   "(cat|less|more|head|tail|cp|scp|rsync|nl|xxd|base64|strings|od|hexdump|sort|uniq)[[:space:]].*(/\\.ssh/|\\.aws/|zs-api-keys\\.env|\\.credentials\\.json|\\.zsvault/(unlocked\\.env|fingerprint-backup\\.key|se-identity)|mcp_oauth_tokens\\.json|oauth_creds\\.json|antigravity-oauth-token|jetski-standalone-oauth-token)"
   # curl/wget uploads of a protected file (@file, --post-file), 2026-10-13.
   "(curl|wget)[[:space:]].*(@|--post-file=?)[^[:space:]]*(/\\.ssh/|\\.aws/|zs-api-keys\\.env|\\.credentials\\.json|\\.zsvault/|mcp_oauth_tokens\\.json|oauth_creds\\.json|antigravity-oauth-token|jetski-standalone-oauth-token)"
+
+  # Infra, container and cron destruction (state outside any project tree), as in
+  # the Claude hook since 2026-07-21; added here 2026-10-13.
+  "(^|[[:space:]])(terraform|tofu|pulumi)[[:space:]]+destroy([[:space:]]|$)"
+  "docker[[:space:]]+(system|volume|container)[[:space:]]+prune"
+  "(^|[[:space:]])crontab[[:space:]]+-[a-zA-Z]*r"
 )
 
 INTERPRETER_COMMAND_PATTERN="(^|[;&|(])[[:space:]]*((command|builtin|exec|nohup|nice|time|xargs|env)[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|()]*/)?(python([0-9]+(\.[0-9]+)*)?|node|ruby|perl|php|deno|bun)([[:space:]]|$)"
@@ -141,10 +162,26 @@ OP_PATTERNS=(
   "(^|[;&|(])[[:space:]]*\\\\op([[:space:]]|$)"
 )
 
+# One grep per category instead of one per pattern (perf, 2026-10-13; the Claude
+# hook has done this since 2026-07-31). `grep -e p1 -e p2 ...` matches iff some
+# single pattern matches, with the same engine and flags, so it is an exact
+# pre-filter: a safe command skips the loops, and a match still runs the loop
+# so the BLOCKED message names the pattern.
+any_match() {
+  local args=() p
+  for p in "$@"; do args+=(-e "$p"); done
+  printf '%s' "$COMMAND" | grep -qE "${args[@]}"
+}
+
 match_policy() {
   local pattern
 
-  for pattern in "${DANGEROUS_PATTERNS[@]}"; do
+  # One gate over every category (Argon review): the interpreter rule also needs
+  # a protected path, so a command that matches none of these cannot be blocked.
+  any_match "${DANGEROUS_PATTERNS[@]}" "$PROTECTED_SECRET_PATH_PATTERN" \
+    "${GIT_DESTRUCTIVE_PATTERNS[@]}" "${OP_PATTERNS[@]}" || return 0
+
+  any_match "${DANGEROUS_PATTERNS[@]}" && for pattern in "${DANGEROUS_PATTERNS[@]}"; do
     if printf '%s' "$COMMAND" | grep -qE "$pattern"; then
       BLOCK_REASON="BLOCKED: '$COMMAND' matches dangerous pattern '$pattern'. The user has prevented you from doing this."
       return 1
@@ -153,15 +190,17 @@ match_policy() {
 
   # Interpreters are blocked only when the same command also names a protected
   # secret path. Normal Python, Node, Ruby, and similar work remains allowed.
-  if printf '%s' "$COMMAND" | grep -qE "$INTERPRETER_COMMAND_PATTERN" \
-     && printf '%s' "$COMMAND" | grep -qE "$PROTECTED_SECRET_PATH_PATTERN"; then
+  # The rare protected-path test runs first so ordinary interpreter use costs one grep.
+  if printf '%s' "$COMMAND" | grep -qE "$PROTECTED_SECRET_PATH_PATTERN" \
+     && printf '%s' "$COMMAND" | grep -qE "$INTERPRETER_COMMAND_PATTERN"; then
     BLOCK_REASON="BLOCKED: '$COMMAND' matches interpreter pattern '$INTERPRETER_COMMAND_PATTERN' and protected-secret-path pattern '$PROTECTED_SECRET_PATH_PATTERN'. Use ZS Vault metadata/access paths instead of reading credential files."
     return 1
   fi
 
   # Destructive git is default-deny unless the command carries the literal
   # ZS_ALLOW_GIT=1 token (agents may self-apply it after stashing work that is not theirs, 2026-09-22). Absolute patterns still win above.
-  if ! printf '%s' "$COMMAND" | grep -qE 'ZS_ALLOW_GIT=1([[:space:]]|$)'; then
+  if any_match "${GIT_DESTRUCTIVE_PATTERNS[@]}" \
+     && ! printf '%s' "$COMMAND" | grep -qE 'ZS_ALLOW_GIT=1([[:space:]]|$)'; then
     for pattern in "${GIT_DESTRUCTIVE_PATTERNS[@]}"; do
       if printf '%s' "$COMMAND" | grep -qE "$pattern"; then
         BLOCK_REASON="BLOCKED: '$COMMAND' matches git-destructive pattern '$pattern'. Deliberate use (ONLY when the user explicitly asked this session): prefix with ZS_ALLOW_GIT=1"
@@ -172,7 +211,8 @@ match_policy() {
 
   # 1Password CLI is default-deny unless the command carries the literal
   # human-authorized ZS_ALLOW_OP=1 token. ZS Vault remains the secrets source.
-  if ! printf '%s' "$COMMAND" | grep -qE 'ZS_ALLOW_OP=1([[:space:]]|$)'; then
+  if any_match "${OP_PATTERNS[@]}" \
+     && ! printf '%s' "$COMMAND" | grep -qE 'ZS_ALLOW_OP=1([[:space:]]|$)'; then
     for pattern in "${OP_PATTERNS[@]}"; do
       if printf '%s' "$COMMAND" | grep -qE "$pattern"; then
         BLOCK_REASON="BLOCKED: '$COMMAND' matches op/1Password pattern '$pattern'. Deliberate use: prefix with ZS_ALLOW_OP=1 (e.g. ZS_ALLOW_OP=1 op item get \"GitHub\"). Secrets SoT: ZS Vault."
@@ -188,6 +228,8 @@ if ! extract_command; then
   BLOCK_REASON="BLOCKED: malformed $LANE hook payload or missing/non-string/empty command."
   emit_block
 fi
+
+[ "$COMMAND" = "$NO_COMMAND" ] && emit_allow
 
 if ! match_policy; then
   emit_block

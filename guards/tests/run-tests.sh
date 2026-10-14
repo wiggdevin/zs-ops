@@ -205,7 +205,32 @@ for lane in claude codex cursor antigravity hermes; do
   run_case "$lane" op-override allow "$(payload_for "$lane" 'ZS_ALLOW_OP=1 op item get GitHub')"
   run_case "$lane" sudo-absolute block "$(payload_for "$lane" 'sudo ls')"
   run_case "$lane" sudo-absolute-with-overrides block "$(payload_for "$lane" 'ZS_ALLOW_GIT=1 ZS_ALLOW_OP=1 sudo ls')"
+  # Late patterns in each list, so the one-grep pre-filter is exercised (2026-10-13).
+  run_case "$lane" chmod-777 block "$(payload_for "$lane" 'chmod -R 777 /tmp/x')"
+  run_case "$lane" fork-bomb block "$(payload_for "$lane" ':(){ :|:& };:')"
+  run_case "$lane" git-push-short-force block "$(payload_for "$lane" 'git push origin main -f')"
+  run_case "$lane" op-absolute-path block "$(payload_for "$lane" '/usr/local/bin/op item get x')"
+  run_case "$lane" op-second-line block "$(payload_for "$lane" $'echo hi\nop item get x')"
+  run_case "$lane" interpreter-ssh-path block "$(payload_for "$lane" 'node -e "require(\"fs\").readFileSync(\"/x/.ssh/id_rsa\")"')"
+  run_case "$lane" sudo-absolute-path block "$(payload_for "$lane" '/usr/bin/sudo ls')"
+  run_case "$lane" keychain-dump block "$(payload_for "$lane" 'security find-generic-password -s github -w')"
+  run_case "$lane" keychain-metadata allow "$(payload_for "$lane" 'security find-generic-password -s github')"
+  run_case "$lane" terraform-destroy block "$(payload_for "$lane" 'terraform destroy -auto-approve')"
+  run_case "$lane" docker-volume-prune block "$(payload_for "$lane" 'docker volume prune -f')"
+  run_case "$lane" crontab-remove block "$(payload_for "$lane" 'crontab -r')"
+  run_case "$lane" crontab-list allow "$(payload_for "$lane" 'crontab -l')"
+  run_case "$lane" interpreter-plain allow "$(payload_for "$lane" 'node scripts/build.mjs --out dist')"
 done
+
+# Antigravity manage_task: send_input text is checked as a command (2026-10-13).
+task_payload() { jq -nc --arg a "$1" --arg i "$2" '{toolCall:{name:"manage_task",args:{Action:$a,Input:$i,TaskId:"t/1"}}}'; }
+run_case antigravity task-send-input-dangerous block "$(task_payload send_input $'rm -rf ~\n')"
+run_case antigravity task-send-input-secret block "$(task_payload send_input $'cat ~/.ssh/id_ed25519\n')"
+run_case antigravity task-send-input-safe allow "$(task_payload send_input $'hello\n')"
+run_case antigravity task-send-input-empty allow "$(task_payload send_input '')"
+run_case antigravity task-other-action allow "$(jq -nc '{toolCall:{name:"manage_task",args:{Action:"kill",TaskId:"t/1"}}}')"
+run_case antigravity task-missing-args block '{"toolCall":{"name":"manage_task"}}'
+run_case antigravity task-input-not-string block "$(jq -nc '{toolCall:{name:"manage_task",args:{Action:"send_input",Input:42}}}')"
 
 run_argument_case unknown-lane not-a-lane
 run_argument_case missing-lane
