@@ -173,6 +173,11 @@ any_match() {
 match_policy() {
   local pattern
 
+  # One gate over every category (Argon review): the interpreter rule also needs
+  # a protected path, so a command that matches none of these cannot be blocked.
+  any_match "${DANGEROUS_PATTERNS[@]}" "$PROTECTED_SECRET_PATH_PATTERN" \
+    "${GIT_DESTRUCTIVE_PATTERNS[@]}" "${OP_PATTERNS[@]}" || return 0
+
   any_match "${DANGEROUS_PATTERNS[@]}" && for pattern in "${DANGEROUS_PATTERNS[@]}"; do
     if printf '%s' "$COMMAND" | grep -qE "$pattern"; then
       BLOCK_REASON="BLOCKED: '$COMMAND' matches dangerous pattern '$pattern'. The user has prevented you from doing this."
