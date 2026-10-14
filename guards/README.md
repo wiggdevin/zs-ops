@@ -73,6 +73,8 @@ Cursor, in `~/.cursor/hooks.json`:
 
 Antigravity global registration belongs in `~/.gemini/config/hooks.json` (the shared path used by the CLI backend). Do not keep the global guard in the legacy `~/.gemini/hooks.json`: Antigravity CLI 1.1.11 can list/load that legacy definition without dispatching it at the real tool boundary. Use `<workspace>/.agents/hooks.json` only for intentionally workspace-local hooks.
 
+The same file also registers two Claude hooks in agy mode (2026-10-13): `~/.claude/hooks/filter-test-output.py antigravity` (PreToolUse `run_command`, rewrites plain test runs through agy's `overwrite`) and `~/.claude/hooks/check-done-claims.py antigravity` (Stop; Jev checks "done" claims and answers `{"decision": "continue"}` once per user turn). The Jev subagent router is not ported: agy subagents ran in 11 of 407 conversations and only ever chose Flash.
+
 ```json
 {
   "zs-dangerous-command": {
@@ -128,6 +130,6 @@ The harness sends native payloads through every lane and never executes the comm
 opening a credential file with its `view_file` tool. It applies the same path rules as
 `~/.claude/hooks/block-secret-reads.sh` (credential stores, OAuth token files, non-template
 `.env` files) to every string in `toolCall.args` and answers `{decision:"deny"}`.
-Registered in `~/.gemini/config/hooks.json` with matcher `view_file`. Tests:
+Registered in `~/.gemini/config/hooks.json` with matcher `view_file|grep_search|find_by_name|list_dir|write_to_file|replace_file_content|multi_replace_file_content` (search, list and edit tools are checked on path-like arguments only; 2026-10-13). Tests:
 `bash tests/secret-file-read-tests.sh`. Added 2026-10-13 after an audit found `agy` could
 read secret files through `view_file`.
