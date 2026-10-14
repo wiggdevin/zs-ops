@@ -21,6 +21,19 @@ check allow "$H/project/.env.local"
 check allow "$H/project/.env.example"
 check allow "$H/project/src/index.ts"
 check allow "$H/project/README.md"
+check deny  "$H/.gemini/antigravity-cli/mcp_oauth_tokens.json"
+check deny  "$H/.gemini/oauth_creds.json.bak-1"
+tool() { # expected tool args-json
+  local got
+  got=$(jq -nc --arg n "$2" --argjson a "$3" '{toolCall:{name:$n,args:$a}}' | ./secret-file-read.sh antigravity | jq -r .decision)
+  if [ "$got" = "$1" ]; then pass=$((pass+1)); else fail=$((fail+1)); echo "FAIL $2 $3 expected=$1 got=$got"; fi
+}
+tool deny  grep_search  "{\"SearchPath\":\"$H/.ssh\",\"Query\":\"BEGIN\"}"
+tool deny  list_dir     "{\"DirectoryPath\":\"$H/.aws/\"}"
+tool deny  find_by_name "{\"SearchDirectory\":\"$H/.zsvault/unlocked.env\",\"Pattern\":\"*\"}"
+tool deny  write_to_file "{\"TargetFile\":\"$H/.ssh/authorized_keys\",\"CodeContent\":\"x\"}"
+tool allow write_to_file "{\"TargetFile\":\"$H/project/README.md\",\"CodeContent\":\"keys live in ~/.ssh/ and ~/.aws/\"}"
+tool allow grep_search  "{\"SearchPath\":\"$H/project\",\"Query\":\".ssh/id_rsa\"}"
 got=$(printf '%s' 'not json' | ./secret-file-read.sh antigravity | jq -r .decision)
 [ "$got" = deny ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL malformed got=$got"; }
 got=$(jq -nc '{toolCall:{name:"view_file",args:{}}}' | ./secret-file-read.sh antigravity | jq -r .decision)

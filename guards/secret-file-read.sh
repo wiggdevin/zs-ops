@@ -6,8 +6,8 @@
 # ~/.claude/hooks/block-secret-reads.sh: credential stores are always denied.
 #
 # Usage (hooks.json): secret-file-read.sh antigravity
-# Every string in toolCall.args is checked, so a renamed path argument still
-# matches. Malformed payloads fail closed. Added 2026-10-13. Project .env reads
+# For view_file every string in toolCall.args is checked, so a renamed path
+# argument still matches. Malformed payloads fail closed. Added 2026-10-13. Project .env reads
 # are allowed, matching the Claude hook since 2026-09-22 (Devin: fewer gates).
 set -u
 
@@ -24,9 +24,17 @@ deny() {
 }
 
 INPUT=$(cat)
+# view_file: every string. Search, list and edit tools (2026-10-13, GPT-6.1 Sol audit):
+# only path-like arguments, so file content or a search query that names a
+# credential path is not mistaken for access to it.
 if ! STRINGS=$(printf '%s' "$INPUT" | jq -er '
-    .toolCall | select(type == "object") | .args | select(type == "object")
-    | [.. | strings] | .[]' 2>/dev/null); then
+    .toolCall | select(type == "object") | . as $call | .args | select(type == "object")
+    | if ($call.name // "") == "view_file" then [.. | strings]
+      else [paths(strings) as $p
+            | select($p | map(tostring) | join(".") | test("path|file|dir|target|uri"; "i"))
+            | getpath($p)]
+      end
+    | .[]' 2>/dev/null); then
   # No string args at all is a valid call; anything unparsable is not.
   if printf '%s' "$INPUT" | jq -e '.toolCall.args | type == "object"' >/dev/null 2>&1; then
     jq -nc '{decision:"allow"}'
@@ -39,12 +47,13 @@ while IFS= read -r value; do
   # APFS is case-insensitive, so match a lowercased copy.
   v=$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')
   case "$v" in
-    *.ssh/*|*/.ssh/*) deny "ssh keys" ;;
-    */.aws/*|*.aws/credentials*) deny "aws credential tree" ;;
+    *.ssh/*|*/.ssh/*|*/.ssh) deny "ssh keys" ;;
+    */.aws/*|*/.aws|*.aws/credentials*) deny "aws credential tree" ;;
+    */.zsvault) deny "zs vault directory" ;;
     *zs-api-keys.env) deny "zs-api-keys env" ;;
     */.zsvault/unlocked.env|*/.zsvault/fingerprint-backup.key|*/.zsvault/se-identity.txt) deny "zs vault plaintext" ;;
     *.credentials.json) deny "claude credentials" ;;
-    *oauth_creds.json|*oauth-token|*/clerk-tokens.json) deny "oauth token store" ;;
+    *oauth_creds.json*|*oauth-token*|*mcp_oauth_tokens.json*|*/clerk-tokens.json) deny "oauth token store" ;;
   esac
 done <<< "$STRINGS"
 

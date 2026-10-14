@@ -94,11 +94,13 @@ emit_block() {
 # ~/.claude/hooks/block-dangerous-commands.sh source policy.
 DANGEROUS_PATTERNS=(
   # Catastrophic rm: only bare root/home targets; subdirectories remain allowed.
-  "rm[[:space:]]+-[a-zA-Z]*[[:space:]]+/(/?)($|[[:space:]])"
-  "rm[[:space:]]+-[a-zA-Z]*[[:space:]]+~(/?)($|[[:space:]])"
-  "rm[[:space:]]+-[a-zA-Z]*[[:space:]]+\\\$HOME(/?)($|[[:space:]])"
-  "rm[[:space:]]+-[a-zA-Z]*[[:space:]]+/Users/zero-suminc\\.(/?)($|[[:space:]])"
-  "rm[[:space:]]+-[a-zA-Z]*[[:space:]]+\\.\\.(/?)($|[[:space:]])"
+  # Trailing globs (/*), split flags (-r -f), the option terminator (--) and quoted
+  # targets match too, as in the Claude hook (GPT-6.1 Sol audit, 2026-10-13).
+  "rm([[:space:]]+-[-a-zA-Z]*)+[[:space:]]+[\"']?//?\\*?/?[\"']?($|[[:space:]])"
+  "rm([[:space:]]+-[-a-zA-Z]*)+[[:space:]]+[\"']?~/?\\*?/?[\"']?($|[[:space:]])"
+  "rm([[:space:]]+-[-a-zA-Z]*)+[[:space:]]+[\"']?\\\$HOME/?\\*?/?[\"']?($|[[:space:]])"
+  "rm([[:space:]]+-[-a-zA-Z]*)+[[:space:]]+[\"']?/Users/zero-suminc\\./?\\*?/?[\"']?($|[[:space:]])"
+  "rm([[:space:]]+-[-a-zA-Z]*)+[[:space:]]+[\"']?\\.\\./?\\*?/?[\"']?($|[[:space:]])"
 
   # Pipe-to-shell supply-chain execution.
   "(curl|wget)[[:space:]].*\\|[[:space:]]*(sudo[[:space:]]+)?(bash|sh|zsh|fish)([[:space:]]|\$)"
@@ -113,11 +115,13 @@ DANGEROUS_PATTERNS=(
 
   # Direct secret readers. The list stays narrow to avoid blocking legitimate
   # grep/awk/sed work on non-secret environment files.
-  "(cat|less|more|head|tail|cp|scp|rsync|nl|xxd|base64|strings|od|hexdump|sort|uniq)[[:space:]].*(/\\.ssh/|\\.aws/credentials|zs-api-keys\\.env|\\.credentials\\.json)"
+  "(cat|less|more|head|tail|cp|scp|rsync|nl|xxd|base64|strings|od|hexdump|sort|uniq)[[:space:]].*(/\\.ssh/|\\.aws/|zs-api-keys\\.env|\\.credentials\\.json|\\.zsvault/(unlocked\\.env|fingerprint-backup\\.key|se-identity)|mcp_oauth_tokens\\.json|oauth_creds\\.json|antigravity-oauth-token|jetski-standalone-oauth-token)"
+  # curl/wget uploads of a protected file (@file, --post-file), 2026-10-13.
+  "(curl|wget)[[:space:]].*(@|--post-file=?)[^[:space:]]*(/\\.ssh/|\\.aws/|zs-api-keys\\.env|\\.credentials\\.json|\\.zsvault/|mcp_oauth_tokens\\.json|oauth_creds\\.json|antigravity-oauth-token|jetski-standalone-oauth-token)"
 )
 
 INTERPRETER_COMMAND_PATTERN="(^|[;&|(])[[:space:]]*((command|builtin|exec|nohup|nice|time|xargs|env)[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|()]*/)?(python([0-9]+(\.[0-9]+)*)?|node|ruby|perl|php|deno|bun)([[:space:]]|$)"
-PROTECTED_SECRET_PATH_PATTERN="(/\.ssh/|\.aws/credentials|zs-api-keys\.env|\.credentials\.json)"
+PROTECTED_SECRET_PATH_PATTERN="(/\.ssh/|\.aws/|zs-api-keys\.env|\.credentials\.json|\.zsvault/(unlocked\.env|fingerprint-backup\.key|se-identity)|mcp_oauth_tokens\.json|oauth_creds\.json|antigravity-oauth-token|jetski-standalone-oauth-token)"
 
 GIT_DESTRUCTIVE_PATTERNS=(
   # 2026-09-22: branch force-delete and update-ref -d allowed (reflog recovers them).
