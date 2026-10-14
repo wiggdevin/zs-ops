@@ -39,18 +39,28 @@ extract_command() {
         | select(type == "string" and length > 0)'
       ;;
     antigravity)
+      # manage_task send_input types text into a running shell, so that text is
+      # checked like a command; its other actions carry no command (2026-10-13).
       filter='select(type == "object")
         | .toolCall
         | select(type == "object")
+        | . as $call
         | .args
         | select(type == "object")
-        | .CommandLine
+        | if ($call.name // "") == "manage_task" then
+            if .Action == "send_input" then
+              (.Input | if . == "" then $none else . end)
+            else $none end
+          else .CommandLine end
         | select(type == "string" and length > 0)'
       ;;
   esac
 
-  COMMAND=$(printf '%s' "$INPUT" | jq -er "$filter" 2>/dev/null)
+  COMMAND=$(printf '%s' "$INPUT" | jq -er --arg none "$NO_COMMAND" "$filter" 2>/dev/null)
 }
+
+# Sentinel for a manage_task call that runs nothing; it is allowed unchecked.
+NO_COMMAND="__zs_guard_no_command__"
 
 emit_allow() {
   case "$LANE" in
@@ -105,10 +115,12 @@ DANGEROUS_PATTERNS=(
   # Pipe-to-shell supply-chain execution.
   "(curl|wget)[[:space:]].*\\|[[:space:]]*(sudo[[:space:]]+)?(bash|sh|zsh|fish)([[:space:]]|\$)"
 
-  # Privilege, device, and filesystem destruction.
-  "(^|[[:space:]])sudo[[:space:]]"
+  # Privilege, device, and filesystem destruction. Path-qualified sudo and the
+  # Keychain password dump came over from the Claude hook on 2026-10-13 (drift).
+  "(^|[[:space:]])([^[:space:]]*/)?sudo[[:space:]]"
   "chmod[[:space:]]+([-a-zA-Z]+[[:space:]]+)*0?777"
   "dd[[:space:]]+.*of=/dev/"
+  "(^|[^[:alnum:]_.-])([^[:space:]]*/)?security[[:space:]]+(find-(generic|internet)-password|export)([[:space:]]+[^[:space:]]+)*[[:space:]]+[\"']?-[a-zA-Z]*[gw]"
   "(^|[[:space:]])mkfs(\\.|[[:space:]])"
   ">[[:space:]]*/dev/(sd|disk|nvme|hd)"
   ":[[:space:]]*\\(\\)[[:space:]]*\\{[[:space:]]*:[[:space:]]*\\|[[:space:]]*:"
@@ -118,6 +130,12 @@ DANGEROUS_PATTERNS=(
   "(cat|less|more|head|tail|cp|scp|rsync|nl|xxd|base64|strings|od|hexdump|sort|uniq)[[:space:]].*(/\\.ssh/|\\.aws/|zs-api-keys\\.env|\\.credentials\\.json|\\.zsvault/(unlocked\\.env|fingerprint-backup\\.key|se-identity)|mcp_oauth_tokens\\.json|oauth_creds\\.json|antigravity-oauth-token|jetski-standalone-oauth-token)"
   # curl/wget uploads of a protected file (@file, --post-file), 2026-10-13.
   "(curl|wget)[[:space:]].*(@|--post-file=?)[^[:space:]]*(/\\.ssh/|\\.aws/|zs-api-keys\\.env|\\.credentials\\.json|\\.zsvault/|mcp_oauth_tokens\\.json|oauth_creds\\.json|antigravity-oauth-token|jetski-standalone-oauth-token)"
+
+  # Infra, container and cron destruction (state outside any project tree), as in
+  # the Claude hook since 2026-07-21; added here 2026-10-13.
+  "(^|[[:space:]])(terraform|tofu|pulumi)[[:space:]]+destroy([[:space:]]|$)"
+  "docker[[:space:]]+(system|volume|container)[[:space:]]+prune"
+  "(^|[[:space:]])crontab[[:space:]]+-[a-zA-Z]*r"
 )
 
 INTERPRETER_COMMAND_PATTERN="(^|[;&|(])[[:space:]]*((command|builtin|exec|nohup|nice|time|xargs|env)[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|()]*/)?(python([0-9]+(\.[0-9]+)*)?|node|ruby|perl|php|deno|bun)([[:space:]]|$)"
@@ -202,6 +220,8 @@ if ! extract_command; then
   BLOCK_REASON="BLOCKED: malformed $LANE hook payload or missing/non-string/empty command."
   emit_block
 fi
+
+[ "$COMMAND" = "$NO_COMMAND" ] && emit_allow
 
 if ! match_policy; then
   emit_block
