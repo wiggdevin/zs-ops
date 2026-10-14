@@ -41,6 +41,9 @@ extract_command() {
     antigravity)
       # manage_task send_input types text into a running shell, so that text is
       # checked like a command; its other actions carry no command (2026-10-13).
+      # Known limit: each send_input is checked alone, so a command split across
+      # two inputs ("su", then "do ls") is not seen whole. Like every pattern
+      # here, this guard is lexical, not a sandbox.
       filter='select(type == "object")
         | .toolCall
         | select(type == "object")
