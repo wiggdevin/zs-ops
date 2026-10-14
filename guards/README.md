@@ -130,6 +130,6 @@ The harness sends native payloads through every lane and never executes the comm
 opening a credential file with its `view_file` tool. It applies the same path rules as
 `~/.claude/hooks/block-secret-reads.sh` (credential stores, OAuth token files, non-template
 `.env` files) to every string in `toolCall.args` and answers `{decision:"deny"}`.
-Registered in `~/.gemini/config/hooks.json` with matcher `view_file`. Tests:
+Registered in `~/.gemini/config/hooks.json` with matcher `view_file|grep_search|find_by_name|list_dir|write_to_file|replace_file_content|multi_replace_file_content` (search, list and edit tools are checked on path-like arguments only; 2026-10-13). Tests:
 `bash tests/secret-file-read-tests.sh`. Added 2026-10-13 after an audit found `agy` could
 read secret files through `view_file`.
