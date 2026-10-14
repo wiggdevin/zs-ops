@@ -121,3 +121,13 @@ The harness sends native payloads through every lane and never executes the comm
 3. Register one lane at a time. Smoke-test one safe command, one blocked command, and malformed input while watching that host's hook log.
 4. Remove the old lane-local dangerous-command hook only after parity passes. Keep unrelated file-read, telemetry, and amend guards in place.
 5. For Antigravity and Hermes, verify malformed input returns deny/block JSON with exit 0. A hook error can fail open in those hosts.
+
+## Antigravity file-read guard
+
+`secret-file-read.sh antigravity` covers what `dangerous-command.sh` cannot see: `agy`
+opening a credential file with its `view_file` tool. It applies the same path rules as
+`~/.claude/hooks/block-secret-reads.sh` (credential stores, OAuth token files, non-template
+`.env` files) to every string in `toolCall.args` and answers `{decision:"deny"}`.
+Registered in `~/.gemini/config/hooks.json` with matcher `view_file`. Tests:
+`bash tests/secret-file-read-tests.sh`. Added 2026-10-13 after an audit found `agy` could
+read secret files through `view_file`.
