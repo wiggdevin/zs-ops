@@ -3,12 +3,12 @@
 #
 # dangerous-command.sh only sees run_command, so `agy` could still open a
 # credential file with view_file. This guard mirrors the path rules of
-# ~/.claude/hooks/block-secret-reads.sh: credential stores are always denied,
-# project .env files are denied unless they are public templates.
+# ~/.claude/hooks/block-secret-reads.sh: credential stores are always denied.
 #
 # Usage (hooks.json): secret-file-read.sh antigravity
 # Every string in toolCall.args is checked, so a renamed path argument still
-# matches. Malformed payloads fail closed. Added 2026-10-13.
+# matches. Malformed payloads fail closed. Added 2026-10-13. Project .env reads
+# are allowed, matching the Claude hook since 2026-09-22 (Devin: fewer gates).
 set -u
 
 LANE="${1:-}"
@@ -45,8 +45,6 @@ while IFS= read -r value; do
     */.zsvault/unlocked.env|*/.zsvault/fingerprint-backup.key|*/.zsvault/se-identity.txt) deny "zs vault plaintext" ;;
     *.credentials.json) deny "claude credentials" ;;
     *oauth_creds.json|*oauth-token|*/clerk-tokens.json) deny "oauth token store" ;;
-    *.env.example|*.env.sample|*.env.template|*.env.dist) : ;;
-    *.env|*.env.*|*/.envrc) deny "dotenv secrets file" ;;
   esac
 done <<< "$STRINGS"
 
