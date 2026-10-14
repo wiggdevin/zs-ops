@@ -34,6 +34,11 @@ tool deny  find_by_name "{\"SearchDirectory\":\"$H/.zsvault/unlocked.env\",\"Pat
 tool deny  write_to_file "{\"TargetFile\":\"$H/.ssh/authorized_keys\",\"CodeContent\":\"x\"}"
 tool allow write_to_file "{\"TargetFile\":\"$H/project/README.md\",\"CodeContent\":\"keys live in ~/.ssh/ and ~/.aws/\"}"
 tool allow grep_search  "{\"SearchPath\":\"$H/project\",\"Query\":\".ssh/id_rsa\"}"
+tool deny  grep_search  "{\"SearchPath\":\"$H/.zsvault/\",\"Query\":\".*\"}"
+tool deny  list_dir     "{\"DirectoryPath\":\"$H/.ssh//\"}"
+tool allow replace_file_content "{\"TargetFile\":\"/tmp/README.md\",\"TargetContent\":\"Use ~/.ssh/id_ed25519\",\"ReplacementContent\":\"Use ZS Vault\"}"
+tool allow multi_replace_file_content "{\"TargetFile\":\"/tmp/README.md\",\"ReplacementChunks\":[{\"TargetContent\":\"Use ~/.ssh/id_ed25519\",\"ReplacementContent\":\"x\"}]}"
+tool deny  replace_file_content "{\"TargetFile\":\"$H/.ssh/config\",\"TargetContent\":\"a\",\"ReplacementContent\":\"b\"}"
 got=$(printf '%s' 'not json' | ./secret-file-read.sh antigravity | jq -r .decision)
 [ "$got" = deny ] && pass=$((pass+1)) || { fail=$((fail+1)); echo "FAIL malformed got=$got"; }
 got=$(jq -nc '{toolCall:{name:"view_file",args:{}}}' | ./secret-file-read.sh antigravity | jq -r .decision)

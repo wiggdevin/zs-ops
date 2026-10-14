@@ -31,7 +31,7 @@ if ! STRINGS=$(printf '%s' "$INPUT" | jq -er '
     .toolCall | select(type == "object") | . as $call | .args | select(type == "object")
     | if ($call.name // "") == "view_file" then [.. | strings]
       else [paths(strings) as $p
-            | select($p | map(tostring) | join(".") | test("path|file|dir|target|uri"; "i"))
+            | select(([$p[] | strings] | last // "") | test("(path|file|dir|directory|uri)$"; "i"))
             | getpath($p)]
       end
     | .[]' 2>/dev/null); then
@@ -46,6 +46,8 @@ fi
 while IFS= read -r value; do
   # APFS is case-insensitive, so match a lowercased copy.
   v=$(printf '%s' "$value" | tr '[:upper:]' '[:lower:]')
+  # Trailing separators (~/.zsvault/) must not dodge the directory rules.
+  while [ "${#v}" -gt 1 ] && [ "${v%/}" != "$v" ]; do v=${v%/}; done
   case "$v" in
     *.ssh/*|*/.ssh/*|*/.ssh) deny "ssh keys" ;;
     */.aws/*|*/.aws|*.aws/credentials*) deny "aws credential tree" ;;
