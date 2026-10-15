@@ -54,6 +54,9 @@
     {"slug": "driss", "name": "DRISS Meal Preps", "icon": "driss", "accent": "#14B8A6",
      "aliases": ["driss", "driss meal preps", "meal preps"],
      "roots": []},
+    {"slug": "pareidolia", "name": "Pareidolia", "icon": "pareidolia", "accent": "#F2B705",
+     "aliases": ["pareidolia"],
+     "roots": ["/Users/zero-suminc./projects/pareidolia"]},
     {"slug": "_unassigned", "name": "Unassigned", "icon": "unassigned", "accent": "#A1A1AA",
      "aliases": [],
      "roots": []}
