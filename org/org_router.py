@@ -402,7 +402,7 @@ def _inside_git(path):
 def _full_sync(fd):
     try:
         fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
-    except OSError:
+    except (OSError, AttributeError):  # AttributeError: not macOS (CI runs on Linux)
         os.fsync(fd)
 
 
