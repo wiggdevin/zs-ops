@@ -5,10 +5,9 @@ Replaces the weekly sweeper (2026-10-13 machine reorganisation, spec:
 ~/.config/zs-ops/org/EXECUTION-SPEC.md). One pass, one lock, one manifest:
 
   1. Expire Finder aliases this job left on the Desktop (3 days).
-  2. Ingest loose files from ~/Desktop (not the Projects/Inbox aliases, not alias files) and
-     ~/Downloads (older than 48h; never .crdownload/.download/.part) into the layout
-     ~/Inbox/<type>/<project>/<YYYY-MM>/<name>. Files routed FROM the Desktop get a Finder
-     alias on the Desktop.
+  2. Ingest loose files from ~/Downloads (older than 48h; never .crdownload/.download/.part)
+     into the layout ~/Inbox/<type>/<project>/<YYYY-MM>/<name>. The Desktop belongs to
+     desktop_clean.py (every 8 hours), so this job no longer reads it or leaves aliases there.
   3. Route new top-level Inbox items (bundles move whole; nothing modified in the last 10
      minutes; handoffs only once older than 1 day).
   4. List >30-day unpinned items as cold-archive candidates (written, never archived here).
@@ -345,10 +344,11 @@ def record_alias(entries, alias: Path, target: str, now: float):
 
 # ----------------------------------------------------------- external src
 def external_rows(now: float, lines, stamp: str, alias_entries):
-    """Move rows for loose Desktop and Downloads files (resolve_rows fills project/dst)."""
+    """Move rows for loose Downloads files (resolve_rows fills project/dst)."""
     rows, warnings = [], []
     tracked = {e["alias"]: e.get("ino") for e in alias_entries}
-    for source, root, min_age in (("desktop", DESKTOP, 0), ("downloads", DOWNLOADS, DOWNLOADS_MIN_AGE_S)):
+    # the Desktop is handled by desktop_clean.py (2026-10-18)
+    for source, root, min_age in (("downloads", DOWNLOADS, DOWNLOADS_MIN_AGE_S),):
         if not root.is_dir():
             continue
         if not rt.is_canonical(root):

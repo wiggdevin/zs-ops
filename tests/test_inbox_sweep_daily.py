@@ -102,10 +102,9 @@ with tempfile.TemporaryDirectory() as td:
 
     lines, warnings, summary = m.run(use_jev=False, do_ingest=False, do_screens=False, do_cold=False,
                                      now=now, alias_maker=fake_alias)
-    check("desktop file routed into layout", (inbox / "notes/sasha").exists()
-          and any((inbox / "notes/sasha").glob("*/sasha-notes.md")))
-    check("desktop file left a Finder alias", (home / "Desktop/sasha-notes.md").exists()
-          and "ALIAS" in (home / "Desktop/sasha-notes.md").read_text())
+    # the Desktop belongs to desktop_clean.py since 2026-10-18: the sweep leaves it alone
+    check("desktop file not touched by the sweep", (home / "Desktop/sasha-notes.md").read_text() == "x"
+          and not any((inbox / "notes").glob("*/*/sasha-notes.md")))
     check("fresh desktop file left alone", (home / "Desktop/fresh-mishmash.md").read_text() == "x")
     check("Projects/Inbox aliases untouched", (home / "Desktop/Projects").read_text() == "x"
           and (home / "Desktop/Inbox").read_text() == "x")
@@ -139,16 +138,15 @@ with tempfile.TemporaryDirectory() as td:
           and (inbox / "notes/handoffs/2026-09-20-sasha-old.md").exists()
           and all(r["undo"] == "restored" for r in res), [r["undo"] for r in res])
 
-    # ---- second run: aliases are tracked, not re-ingested; nothing else to do
-    FLAGGED.discard(str(home / "Desktop/sasha-notes.md"))      # the restored original is a plain file
-    touch(home / "Desktop/sasha-notes.md", age_s=3600)
-    m.run(use_jev=False, do_ingest=False, do_screens=False, do_cold=False, now=now, alias_maker=fake_alias)
-    tracked = json.loads((m.STATE_DIR / "desktop-aliases.json").read_text())
-    check("alias tracked in state", len(tracked) >= 1 and tracked[-1]["alias"].endswith("sasha-notes.md"))
-    alias_path = Path(tracked[-1]["alias"])
-    before = list((inbox / "notes/sasha").glob("*/sasha-notes*"))
+    # ---- legacy aliases (made before 2026-10-18) still expire through the tracked state
+    target = touch(inbox / "notes/sasha/2026-10/sasha-notes.md")
+    fake_alias(target, home / "Desktop", "sasha-alias.md")
+    tracked = []
+    m.record_alias(tracked, home / "Desktop/sasha-alias.md", str(target), now)
+    m._save_json(m.STATE_DIR / "desktop-aliases.json", tracked)
+    alias_path = home / "Desktop/sasha-alias.md"
     m.run(use_jev=False, do_ingest=False, do_screens=False, do_cold=False, now=now + 60, alias_maker=fake_alias)
-    check("tracked alias is not ingested again", list((inbox / "notes/sasha").glob("*/sasha-notes*")) == before)
+    check("tracked alias is not ingested", alias_path.exists())
 
     # ---- alias expiry: kept at 2 days, removed after 3
     keep, removed = m.expire_desktop_aliases(now + 2 * DAY, [], "T", dry=False)
