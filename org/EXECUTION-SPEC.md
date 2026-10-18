@@ -16,9 +16,13 @@ The new engine is live: launchd com.zs.inbox-sweep runs inbox_sweep.py daily at 
    daily job files them once they are >1 day old (was 7 days; shortened 2026-10-13 at Devin's
    request to leave no flat leftovers). Readers search recursively.
 4. Desktop: exactly `Projects` alias, `Inbox` alias, plus the Devin Search desktop bar
-   (app window, not a file). An item dropped on Desktop is routed; a Finder alias to its new
-   location is left on Desktop for 3 days, then removed (item stays in search Recent).
-   Devin explicitly asked for that shortcut behavior.
+   (app window, not a file). `desktop_clean.py` (launchd `com.zs.desktop-clean`, every 8 hours,
+   Devin's working window) empties the rest, folders included: aliases, exact duplicates and
+   installers whose app is in /Applications go to `~/.Trash` (a rename of the item itself, re-checked just before; the manifest records where each one went);
+   items sharing a leading name token (3+) are consolidated into one bundle; everything else
+   is renamed `YYYY-MM-DD-<project>-<subject>.<ext>` and routed. No Desktop aliases are left
+   any more (Devin, 2026-10-18: "I only want projects in inbox on my desktop"). Git repos and
+   items modified in the last 10 minutes stay.
 5. Desktop design material is IN USE by the design-library session (zero-suminc-5f) and
    registered in ~/projects/tools/zs-library/library.yaml. It moves to a stable home, NOT to
    the drive: `~/projects/design-research/` (study/, design-extra/, desktop-docs/ ...).
