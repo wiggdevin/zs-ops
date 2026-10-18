@@ -15,7 +15,8 @@ Every item on the Desktop other than the two aliases is handled in one pass:
      name YYYY-MM-DD-<project>-<subject>.<ext> (project: registry alias, then Jev).
 
 Never touches git repos or anything modified in the last 10 minutes, never overwrites, and
-never deletes outright: Trash goes through Finder (Put Back works) and moves are written to a
+never deletes outright: Trash is a no-replace rename of the item itself (never what a link
+points to) into ~/.Trash, re-checked right before it happens, and every action is written to a
 manifest and journal (undo: org/org_router.py undo --manifest F). It shares the sweep lock with
 inbox_sweep.py, which no longer handles the Desktop.
 
@@ -174,50 +175,59 @@ def lead_token(name: str):
     return tok
 
 
-def finder_trash(path: Path, runner=subprocess.run):
-    """Move path to the Trash through Finder (so Put Back works). Returns an error or None."""
-    script = ('on run argv\ntell application "Finder" to delete (POSIX file (item 1 of argv) as alias)\n'
-              'end run\n')
-    try:
-        out = runner(["/usr/bin/osascript", "-e", script, str(path)],
-                     capture_output=True, text=True, timeout=60)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        out = None
-        err = type(exc).__name__
-    if out is not None and out.returncode == 0 and not os.path.lexists(str(path)):
-        return None
-    # Finder unavailable (no Automation grant, logged out): plain move into ~/.Trash
+def trash_path(path: Path):
+    """Move path itself (never what it points to) into ~/.Trash. Returns (dst, error)."""
     try:
         TRASH.mkdir(exist_ok=True)
         dst = TRASH / path.name
-        if os.path.lexists(str(dst)):
-            dst = TRASH / ("%s %s%s" % (path.stem, time.strftime("%H.%M.%S"), path.suffix))
+        n = 2
+        while os.path.lexists(str(dst)):
+            dst = TRASH / ("%s %s-%d%s" % (path.stem, time.strftime("%H.%M.%S"), n, path.suffix))
+            n += 1
         rt.rename_noreplace(str(path), str(dst))
-        return None
+        return str(dst), None
     except OSError as exc:
-        return "trash failed: %s" % (exc.strerror or type(exc).__name__)
+        return None, "trash failed: %s" % (exc.strerror or type(exc).__name__)
+
+
+def has_resource_fork(path: Path) -> bool:
+    """A file whose resource fork holds data is never called a duplicate (sha256 sees the data
+    fork only). Unreadable counts as having one."""
+    try:
+        return os.path.getsize(str(path) + "/..namedfork/rsrc") > 0
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
 
 
 def dmg_apps(dmg: Path, runner=subprocess.run):
-    """Names of the .app bundles at the top of a disk image (mounted read-only), or None."""
+    """Names of the .app bundles at the top of a disk image (mounted read-only), or None.
+    The image is always detached; when the detach fails the answer is None (not trusted)."""
     mnt = tempfile.mkdtemp(prefix="zs-dmg-")
+    apps = None
     try:
         out = runner(["/usr/bin/hdiutil", "attach", "-readonly", "-nobrowse", "-noautoopen",
                       "-noverify", "-mountpoint", mnt, str(dmg)],
                      capture_output=True, text=True, timeout=120, input="Y\n")
-        if out.returncode != 0:
-            return None
-        try:
-            return sorted(n for n in os.listdir(mnt) if n.endswith(".app"))
-        finally:
-            runner(["/usr/bin/hdiutil", "detach", mnt, "-force"], capture_output=True, text=True, timeout=60)
+        if out.returncode == 0:
+            apps = sorted(n for n in os.listdir(mnt) if n.endswith(".app"))
     except (OSError, subprocess.TimeoutExpired):
-        return None
+        apps = None
     finally:
+        if os.path.ismount(mnt):
+            try:
+                det = runner(["/usr/bin/hdiutil", "detach", mnt, "-force"],
+                             capture_output=True, text=True, timeout=60)
+                if det.returncode != 0:
+                    apps = None
+            except (OSError, subprocess.TimeoutExpired):
+                apps = None
         try:
             os.rmdir(mnt)
         except OSError:
-            pass
+            apps = None if os.path.ismount(mnt) else apps
+    return apps
 
 
 def installed_app_for(installer: Path, apps_of=dmg_apps):
@@ -231,15 +241,39 @@ def installed_app_for(installer: Path, apps_of=dmg_apps):
         except OSError:
             continue
     if installer.suffix.lower() == ".dmg":
-        for app in apps_of(installer) or []:
-            if app.lower() in installed:
-                return installed[app.lower()]
+        apps = apps_of(installer) or []
+        # disposable only when every app on the image is installed
+        if apps and all(a.lower() in installed for a in apps):
+            return ", ".join(installed[a.lower()] for a in apps)
         return None
     base = re.split(r"[-_ ]\d", installer.stem, maxsplit=1)[0].lower()
     return installed.get(base + ".app") if base else None
 
 
 # -------------------------------------------------------------------- plan
+def fingerprint(st):
+    return [st.st_ino, st.st_size, st.st_mtime_ns, st.st_mode]
+
+
+def still_disposable(t):
+    """Re-check a trash row right before the move: same file as planned, and for a duplicate the
+    surviving copy still exists with the same bytes. Returns a reason when it is not."""
+    try:
+        st = os.lstat(t["src"])
+    except OSError:
+        return "gone"
+    if fingerprint(st) != t.get("fp"):
+        return "changed since planning"
+    if t["reason"] == "duplicate":
+        c = t["copy_of"]
+        if os.path.islink(c) or not os.path.isfile(c) or has_resource_fork(Path(c)) \
+                or sha256_any(Path(c)) != t["sha256"] or sha256_any(Path(t["src"])) != t["sha256"]:
+            return "surviving copy changed or missing"
+    if t["reason"] == "installed" and not all(os.path.isdir(a) for a in t["app"].split(", ")):
+        return "app no longer installed"
+    return None
+
+
 def classify(now: float, lines, stamp: str, by_size=None, apps_of=dmg_apps):
     """(trash rows, move candidates, skips) for every Desktop item."""
     trash, cands, skips = [], [], []
@@ -257,16 +291,19 @@ def classify(now: float, lines, stamp: str, by_size=None, apps_of=dmg_apps):
         if p.suffix.lower() in PARTIAL_EXTS:
             skips.append({"src": e.path, "reason": "partial-download"})
             continue
-        if e.is_symlink():
-            trash.append({"src": e.path, "reason": "symlink"})
-            continue
         try:
             st = os.lstat(e.path)
         except OSError:
             continue
+        fp = fingerprint(st)
+        if e.is_symlink():
+            trash.append({"src": e.path, "reason": "symlink", "fp": fp})
+            continue
         is_dir = e.is_dir(follow_symlinks=False)
-        if not is_dir and (rt.alias_matches(e.path, tracked.get(e.path)) or rt.finder_alias_flag(e.path)):
-            trash.append({"src": e.path, "reason": "alias", "target": (tracked.get(e.path) or {}).get("target")})
+        if not is_dir and (rt.alias_matches(e.path, tracked.get(e.path)) or (
+                st.st_size < rt.ALIAS_MAX_BYTES and rt.finder_alias_flag(e.path))):
+            trash.append({"src": e.path, "reason": "alias", "fp": fp,
+                          "target": (tracked.get(e.path) or {}).get("target")})
             continue
         newest, has_git, incomplete = rt.walk_info(e.path, stop_after=now - rt.RECENT_S)
         if has_git or rt._source_problem(e.path) == "skipped-git-repo":
@@ -280,21 +317,24 @@ def classify(now: float, lines, stamp: str, by_size=None, apps_of=dmg_apps):
             skips.append({"src": e.path, "reason": "recent"})
             continue
         if not is_dir:
-            digest = sha256_any(p)
+            # empty files are never duplicates; nor is anything with resource-fork data
+            digest = sha256_any(p) if st.st_size and not has_resource_fork(p) else None
             if digest and digest in seen:
-                trash.append({"src": e.path, "reason": "duplicate", "copy_of": seen[digest]})
+                trash.append({"src": e.path, "reason": "duplicate", "copy_of": seen[digest],
+                              "sha256": digest, "fp": fp})
                 continue
             if digest and by_size is not None:
                 copy = inbox_copy_of(p, st.st_size, digest, by_size)
                 if copy:
-                    trash.append({"src": e.path, "reason": "duplicate", "copy_of": copy})
+                    trash.append({"src": e.path, "reason": "duplicate", "copy_of": copy,
+                                  "sha256": digest, "fp": fp})
                     continue
             if digest:
                 seen[digest] = e.path
             if p.suffix.lower() in INSTALLER_EXTS:
                 app = installed_app_for(p, apps_of=apps_of)
                 if app:
-                    trash.append({"src": e.path, "reason": "installed", "app": app})
+                    trash.append({"src": e.path, "reason": "installed", "app": app, "fp": fp})
                     continue
         cands.append({"op": "move", "src": e.path, "name": name, "kind": "dir" if is_dir else "file",
                       "type": route(p), "has_git": False, "mtime": st.st_mtime, "source": "desktop"})
@@ -304,7 +344,8 @@ def classify(now: float, lines, stamp: str, by_size=None, apps_of=dmg_apps):
 def existing_bundle(inbox: Path, tok: str):
     """The newest bundle folder this job made for a token (<type>/<project>/<month>/<date>-…-tok)."""
     found = [p for p in inbox.glob("*/*/*/20[0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*%s" % tok)
-             if p.is_dir() and not p.is_symlink() and p.name.endswith("-" + tok)]
+             if p.is_dir() and not p.is_symlink() and p.name.endswith("-" + tok)
+             and rt._source_problem(str(p)) is None]  # never add into a repo
     return max(found, key=lambda p: (p.parts[-2], p.name)) if found else None
 
 
@@ -354,7 +395,7 @@ def plan_moves(cands, now: float, use_jev=True, evaluate=None, log=None):
 
 
 # --------------------------------------------------------------------- run
-def run(dry=False, use_jev=True, now=None, evaluate=None, apps_of=dmg_apps, trasher=finder_trash):
+def run(dry=False, use_jev=True, now=None, evaluate=None, apps_of=dmg_apps, trasher=trash_path):
     now = now or time.time()
     stamp = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(now))
     lines, summary = [], {}
@@ -377,7 +418,12 @@ def run(dry=False, use_jev=True, now=None, evaluate=None, apps_of=dmg_apps, tras
         lines.append(f"{stamp} {'DRY ' if dry else ''}TRASH {t['src']} — {why}")
         if dry:
             continue
-        err = trasher(Path(t["src"]))
+        err = still_disposable(t)
+        if err:
+            t["status"] = "skipped-" + err.replace(" ", "-")
+            lines.append(f"{stamp} SKIP trash {t['src']} — {err}")
+            continue
+        t["trash_dst"], err = trasher(Path(t["src"]))
         t["status"] = "done" if err is None else err
         if err:
             lines.append(f"{stamp} WARN {err}: {t['src']}")
@@ -417,7 +463,7 @@ def run(dry=False, use_jev=True, now=None, evaluate=None, apps_of=dmg_apps, tras
     summary["manifest"] = str(manifest_path) if (results or trashed) else "(none)"
     lines.append(f"{stamp} {'DRY ' if dry else ''}desktop-clean " + json.dumps(summary, sort_keys=True))
     failed = any(r["status"].startswith("failed") for r in results) or any(
-        t.get("status") not in (None, "done") for t in trash)
+        (t.get("status") or "").startswith("trash failed") for t in trash)
     return lines, summary, 1 if failed else 0
 
 

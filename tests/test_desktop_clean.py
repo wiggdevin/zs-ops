@@ -47,9 +47,7 @@ TRASHED = []
 
 def fake_trash(path):
     TRASHED.append(str(path))
-    m.TRASH.mkdir(exist_ok=True)
-    os.rename(str(path), str(m.TRASH / path.name))
-    return None
+    return m.trash_path(path)
 
 
 with tempfile.TemporaryDirectory() as td:
@@ -129,6 +127,31 @@ with tempfile.TemporaryDirectory() as td:
     check("undo restores moved items", (desk / "Sasha Meal Companion - project setup/README.md").exists()
           and (desk / "Mug35_3D/a.glb").exists() and all(r["undo"] == "restored" for r in res),
           [r["undo"] for r in res])
+
+    # ---- Sol review fixes (2026-10-18)
+    outside = touch(home / "elsewhere/unique.txt", text="only copy")
+    os.symlink(str(outside), str(desk / "link-to-unique"))
+    touch(desk / "Two-1.0.dmg", text="two apps")              # Common.app installed, Unique.app not
+    (home / "Applications/Common.app").mkdir()
+    a = touch(desk / "twin-x.md", text="TWIN2")
+    b = touch(desk / "twin-y.md", text="TWIN2")
+    apps2 = lambda dmg: ["Common.app", "Unique.app"]
+    trash, cands, skips = m.classify(time.time(), [], "T", by_size={}, apps_of=apps2)
+    tw = [t for t in trash if t["reason"] == "duplicate"]
+    check("multi-app dmg kept when one app is missing", not any(t["src"].endswith("Two-1.0.dmg") for t in trash))
+    b.write_text("TWIN2 plus unique edits")                     # edited after planning
+    os.utime(str(b), (time.time() - 3 * DAY, time.time() - 3 * DAY))
+    check("changed duplicate is not trashed", len(tw) == 1 and m.still_disposable(tw[0]) is not None)
+    link = [t for t in trash if t["src"].endswith("link-to-unique")][0]
+    dst, err = m.trash_path(Path(link["src"]))
+    check("trashing a symlink never touches its target", err is None and outside.read_text() == "only copy"
+          and os.path.islink(dst))
+    calls = []
+
+    def fake_hdiutil(cmd, **kw):
+        calls.append(cmd[1])
+        raise __import__("subprocess").TimeoutExpired(cmd, 1)
+    check("dmg probe that times out is not trusted", m.dmg_apps(Path("/x.dmg"), runner=fake_hdiutil) is None)
 
     check("names: already-dated names are kept",
           m.clean_name("2026-10-01-sasha-x.md", "sasha", None, False) == "2026-10-01-sasha-x.md")

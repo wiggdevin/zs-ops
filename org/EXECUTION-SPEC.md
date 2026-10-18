@@ -18,7 +18,7 @@ The new engine is live: launchd com.zs.inbox-sweep runs inbox_sweep.py daily at 
 4. Desktop: exactly `Projects` alias, `Inbox` alias, plus the Devin Search desktop bar
    (app window, not a file). `desktop_clean.py` (launchd `com.zs.desktop-clean`, every 8 hours,
    Devin's working window) empties the rest, folders included: aliases, exact duplicates and
-   installers whose app is in /Applications go to the Trash (via Finder, Put Back works);
+   installers whose app is in /Applications go to `~/.Trash` (a rename of the item itself, re-checked just before; the manifest records where each one went);
    items sharing a leading name token (3+) are consolidated into one bundle; everything else
    is renamed `YYYY-MM-DD-<project>-<subject>.<ext>` and routed. No Desktop aliases are left
    any more (Devin, 2026-10-18: "I only want projects in inbox on my desktop"). Git repos and
