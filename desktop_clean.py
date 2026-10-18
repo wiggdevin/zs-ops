@@ -211,7 +211,11 @@ def dmg_apps(dmg: Path, runner=subprocess.run):
                       "-noverify", "-mountpoint", mnt, str(dmg)],
                      capture_output=True, text=True, timeout=120, input="Y\n")
         if out.returncode == 0:
-            apps = sorted(n for n in os.listdir(mnt) if n.endswith(".app"))
+            apps = []  # every .app on the image, nested ones included (not inside an .app)
+            for root, dirs, files in os.walk(mnt):
+                apps += [d for d in dirs if d.endswith(".app")]
+                dirs[:] = [d for d in dirs if not d.endswith(".app") and not d.startswith(".")]
+            apps = sorted(set(apps))
     except (OSError, subprocess.TimeoutExpired):
         apps = None
     finally:
@@ -267,6 +271,7 @@ def still_disposable(t):
     if t["reason"] == "duplicate":
         c = t["copy_of"]
         if os.path.islink(c) or not os.path.isfile(c) or has_resource_fork(Path(c)) \
+                or has_resource_fork(Path(t["src"])) \
                 or sha256_any(Path(c)) != t["sha256"] or sha256_any(Path(t["src"])) != t["sha256"]:
             return "surviving copy changed or missing"
     if t["reason"] == "installed" and not all(os.path.isdir(a) for a in t["app"].split(", ")):
@@ -373,6 +378,10 @@ def plan_moves(cands, now: float, use_jev=True, evaluate=None, log=None):
         else:
             month = day.strftime("%Y-%m")
             bundle = inbox / btype / project / month / clean_name(tok, project, day, True)
+            n = 2  # the name is taken (e.g. by a bundle someone made a repo): use a fresh one
+            while os.path.lexists(str(bundle)):
+                bundle = bundle.with_name("%s-%02d" % (clean_name(tok, project, day, True), n))
+                n += 1
         for r in rs:
             r.update(project=project, month=month, type=btype, bundle=str(bundle),
                      dst=str(bundle / r["name"]))

@@ -153,6 +153,17 @@ with tempfile.TemporaryDirectory() as td:
         raise __import__("subprocess").TimeoutExpired(cmd, 1)
     check("dmg probe that times out is not trusted", m.dmg_apps(Path("/x.dmg"), runner=fake_hdiutil) is None)
 
+    # a bundle that became a repo is never added to, nor re-created at the same path
+    for n in ("zeta_a.md", "zeta_b.md", "zeta_c.md"):
+        touch(desk / n, text=n)
+    repo_b = inbox / "notes/_unassigned/2026-10/2026-10-15-zeta"
+    touch(repo_b / ".git/HEAD")
+    rows = m.plan_moves([dict(op="move", src=str(desk / n), name=n, kind="file", type="notes",
+                              has_git=False, mtime=time.time() - 3 * DAY, source="desktop")
+                         for n in ("zeta_a.md", "zeta_b.md", "zeta_c.md")], time.time(), use_jev=False)
+    check("repo bundle path is not reused", all(not r["dst"].startswith(str(repo_b) + "/") for r in rows),
+          [r["dst"] for r in rows])
+
     check("names: already-dated names are kept",
           m.clean_name("2026-10-01-sasha-x.md", "sasha", None, False) == "2026-10-01-sasha-x.md")
     check("lead token skips generic words", m.lead_token("Screenshot 2026") is None
