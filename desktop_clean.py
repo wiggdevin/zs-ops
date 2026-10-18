@@ -195,7 +195,7 @@ def has_resource_fork(path: Path) -> bool:
     fork only). Unreadable counts as having one."""
     try:
         return os.path.getsize(str(path) + "/..namedfork/rsrc") > 0
-    except FileNotFoundError:
+    except (FileNotFoundError, NotADirectoryError):  # no fork / no named forks (not macOS)
         return False
     except OSError:
         return True
