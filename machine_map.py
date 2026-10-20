@@ -14,6 +14,8 @@ map/declared.json is the source of truth). This script is deliberately just the
 disk/activity inventory; its old Services section moved into the doctor as
 declared-edge invariants. zs-system-map was archived, superseded by the doctor.
 """
+from __future__ import annotations  # launchd runs /usr/bin/python3 (3.9): no PEP 604 at runtime
+
 import json
 import os
 import re
