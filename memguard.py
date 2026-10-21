@@ -25,12 +25,13 @@ is never a separate target. Everything else is reported, never touched. Two rule
 
 Memory is the physical footprint (resident plus compressed) from proc_pid_rusage,
 byte-accurate, not RSS: a process whose pages were compressed looks small in RSS
-while it fills the compressor. The compressor size is sysctl vm.compressor_bytes_used
-(vm_stat's "Pages occupied by compressor").
+while it fills the compressor. The compressor size is the pages it occupies
+(host_statistics64, the same number as vm_stat's "Pages occupied by compressor").
 
-Stopping: every target gets SIGTERM at once, then SIGKILL after one shared GRACE_S.
-Before each signal the process start time is checked again, so a reused pid is
-never signalled. One copy runs at a time (flock). Each stop is logged to
+Stopping: every process of the chosen trees is frozen (SIGSTOP) and the trees are
+read again, so a worker forked meanwhile is caught too. Then all get SIGTERM and
+SIGCONT at once, and SIGKILL after one shared GRACE_S. The start time recorded with
+the sample is checked before each signal, so a reused pid is never signalled. One copy runs at a time (flock). Each stop is logged to
 ~/Library/Logs/zs-memguard.jsonl before the signals and again with the results, and
 shown as a desktop notification.
 
@@ -41,13 +42,13 @@ Tuning (env; an invalid number falls back to the default and is reported):
   ZS_MEMGUARD_PROC_GB        per-tree cap, GB                   (default 32)
   ZS_MEMGUARD_COMPRESSED_GB  compressor trigger, GB             (default 16)
   ZS_MEMGUARD_KEEP_GB        runner total kept under pressure   (default 16)
-  ZS_MEMGUARD_GRACE_S        SIGTERM to SIGKILL, seconds        (default 5)
+  ZS_MEMGUARD_GRACE_S        SIGTERM to SIGKILL, seconds        (default 5, at most 30)
   ZS_MEMGUARD_DRY_RUN        1 = decide and log, stop nothing
   ZS_MEMGUARD=0              turn the guard off
 
 stdout is one JSON line. "status" is off, busy (another copy runs), ok, degraded
-(a pressure sensor failed; the cap still applied), dry_run, stopped or error (the
-process list could not be read; exit 1). "summary" is plain text without quotes.
+(a sensor, a runner's footprint, the lock or the config failed; the rest still
+applied), dry_run, stopped or error (the process list could not be read; exit 1). "summary" is plain text without quotes.
 """
 
 import ctypes
@@ -70,26 +71,76 @@ GB = 1024 ** 3
 
 RUNNERS = {"pytest", "py.test", "vitest", "jest"}
 JS_RUNNER_SCRIPTS = {"vitest", "vitest.mjs", "jest", "jest.js"}
-PY_OPTS_WITH_ARG = {"-W", "-X", "-Q"}
-NUMBERS = (("proc_gb", "ZS_MEMGUARD_PROC_GB", 32.0), ("compressed_gb", "ZS_MEMGUARD_COMPRESSED_GB", 16.0),
-           ("keep_gb", "ZS_MEMGUARD_KEEP_GB", 16.0), ("grace_s", "ZS_MEMGUARD_GRACE_S", 5.0))
+NUMBERS = (("proc_gb", "ZS_MEMGUARD_PROC_GB", 32.0, 1024), ("compressed_gb", "ZS_MEMGUARD_COMPRESSED_GB", 16.0, 1024),
+           ("keep_gb", "ZS_MEMGUARD_KEEP_GB", 16.0, 1024),
+           ("grace_s", "ZS_MEMGUARD_GRACE_S", 5.0, 30))  # both callers stop the guard after 60 s
 
 
 def config():
     cfg, errors = {}, []
-    for key, env, default in NUMBERS:
+    for key, env, default, top in NUMBERS:
         raw = os.environ.get(env, "").strip()
         try:
             v = float(raw) if raw else default
         except ValueError:
             v = float("nan")
-        if not (math.isfinite(v) and 0 < v <= 1024):
+        if not (math.isfinite(v) and 0 < v <= top):
             errors.append("%s invalid, using %g" % (env, default))
             v = default
         cfg[key] = v
     cfg["dry_run"] = os.environ.get("ZS_MEMGUARD_DRY_RUN") == "1"
     cfg["errors"] = errors
     return cfg
+
+
+PY_SCRIPT_RUNNERS = {"pytest", "py.test"}
+NODE_OPTS_WITH_ARG = {"-r", "--require", "--import", "--loader", "--experimental-loader", "--title", "-C",
+                      "--conditions", "--env-file", "--input-type", "--inspect-port", "--max-old-space-size"}
+NODE_CODE_OPTS = {"-e", "--eval", "-p", "--print", "-i", "--interactive", "-"}
+
+
+def _python_runs_pytest(args):
+    """args after the interpreter: True for `-m pytest`, `-mpytest`, `-Impytest` or a pytest script."""
+    i = 0
+    while i < len(args):
+        t = args[i]
+        if t == "-" or t == "--":
+            return t == "--" and i + 1 < len(args) and os.path.basename(args[i + 1]) in PY_SCRIPT_RUNNERS
+        if t.startswith("--"):
+            i += 1
+            continue
+        if t.startswith("-"):
+            for k, ch in enumerate(t[1:], 1):  # a cluster of short options, e.g. -uIm or -Wignore
+                rest = t[k + 1:]
+                if ch == "c":
+                    return False  # -c code: whatever follows is the program's argv
+                if ch == "m":
+                    mod = rest or (args[i + 1] if i + 1 < len(args) else "")
+                    return mod in PY_SCRIPT_RUNNERS
+                if ch in "WXQ":
+                    i += 0 if rest else 1  # the value is attached or is the next token
+                    break
+            i += 1
+            continue
+        return os.path.basename(t) in PY_SCRIPT_RUNNERS
+    return False
+
+
+def _node_runs_runner(args, bun):
+    i = 0
+    if bun and args and args[0] == "test":
+        return True  # bun's own test runner
+    if bun and args and args[0] in ("run", "x"):
+        i = 1
+    while i < len(args):
+        t = args[i]
+        if t in NODE_CODE_OPTS:
+            return False
+        if t.startswith("-"):
+            i += 2 if (t in NODE_OPTS_WITH_ARG and "=" not in t) else 1
+            continue
+        return os.path.basename(t) in JS_RUNNER_SCRIPTS
+    return False
 
 
 def is_runner(command):
@@ -100,28 +151,10 @@ def is_runner(command):
     exe = os.path.basename(toks[0])
     if exe in RUNNERS:
         return True
-    if re.match(r"^python[\d.]*$", exe):
-        i, rest = 0, toks[1:]
-        while i < len(rest):
-            t = rest[i]
-            if t == "-m":
-                return i + 1 < len(rest) and rest[i + 1] in ("pytest", "py.test")
-            if t.startswith("-m"):
-                return t[2:] in ("pytest", "py.test")
-            if t == "-c" or t == "-":
-                return False
-            if t in PY_OPTS_WITH_ARG:
-                i += 2
-                continue
-            if t.startswith("-"):
-                i += 1
-                continue
-            return os.path.basename(t) in ("pytest", "py.test")
-        return False
+    if re.match(r"^python[\d.]*$", exe, re.I):  # Homebrew shows .../Python.app/Contents/MacOS/Python
+        return _python_runs_pytest(toks[1:])
     if re.match(r"^(node[\d.]*|bun)$", exe):
-        for t in toks[1:]:
-            if not t.startswith("-"):
-                return os.path.basename(t) in JS_RUNNER_SCRIPTS
+        return _node_runs_runner(toks[1:], exe == "bun")
     return False
 
 
@@ -212,21 +245,24 @@ def _rusage(pid):
     return r if _LIBPROC.proc_pid_rusage(int(pid), 0, ctypes.byref(r)) == 0 else None
 
 
-def footprint(pid):
+def facts(pid):
+    """(footprint bytes, identity) from one proc_pid_rusage read; None when gone, a zombie or not ours."""
     r = _rusage(pid)
-    return r.phys_footprint if r is not None else 0
+    if r is None or r.proc_exit_abstime != 0:
+        return None
+    return r.phys_footprint, r.proc_start_abstime
 
 
 def identity(pid):
-    """A start-time token for a live process; None when it is gone, a zombie or not ours."""
+    """A start-time token for a live process; None when it is gone, a zombie, not ours or unreadable."""
     if _LIBPROC is not None:
-        r = _rusage(pid)
-        return r.proc_start_abstime if r is not None and r.proc_exit_abstime == 0 else None
+        f = facts(pid)
+        return f[1] if f else None
     try:
         out = subprocess.run(["ps", "-o", "stat=,lstart=", "-p", str(pid)],
                              capture_output=True, text=True, timeout=5).stdout.strip()
     except (subprocess.SubprocessError, OSError):
-        return "unknown"  # cannot tell: treat as still the same live process
+        return None  # cannot verify it: never signal it
     return out.split(None, 1)[1] if out and not out.startswith("Z") and " " in out else None
 
 
@@ -239,12 +275,34 @@ def sysctl_int(name):
     return v.value
 
 
+class _VM64(ctypes.Structure):  # struct vm_statistics64; checked against vm_stat on 2026-10-21
+    _fields_ = [(n, ctypes.c_uint32) for n in ("free", "active", "inactive", "wire")] + \
+        [(n, ctypes.c_uint64) for n in ("zero_fill", "reactivations", "pageins", "pageouts", "faults",
+                                        "cow_faults", "lookups", "hits", "purges")] + \
+        [(n, ctypes.c_uint32) for n in ("purgeable", "speculative")] + \
+        [(n, ctypes.c_uint64) for n in ("decompressions", "compressions", "swapins", "swapouts")] + \
+        [(n, ctypes.c_uint32) for n in ("compressor_page_count", "throttled", "external", "internal")] + \
+        [("uncompressed_in_compressor", ctypes.c_uint64)]
+
+
+def compressor_bytes():
+    """Physical memory the compressor occupies (vm_stat "Pages occupied by compressor"); None if unreadable."""
+    if _LIBC is None:
+        return None
+    page = sysctl_int("hw.pagesize")
+    _LIBC.mach_host_self.restype = ctypes.c_uint32
+    info, count = _VM64(), ctypes.c_uint32(ctypes.sizeof(_VM64) // 4)
+    if not page or _LIBC.host_statistics64(_LIBC.mach_host_self(), 4, ctypes.byref(info), ctypes.byref(count)) != 0:
+        return None
+    return info.compressor_page_count * page
+
+
 class SampleError(Exception):
     pass
 
 
-def sample():
-    """(procs {pid: (ppid, command)}, compressed bytes or None, pressure level or None)."""
+def list_procs():
+    """{pid: (ppid, command)} for this user's processes."""
     try:
         r = subprocess.run(["/bin/ps", "-U", str(os.getuid()), "-o", "pid=,ppid=,command="],
                            capture_output=True, text=True, timeout=15)
@@ -253,15 +311,39 @@ def sample():
     procs = parse_ps(r.stdout)
     if r.returncode != 0 or not procs:
         raise SampleError("ps exit %d, %d processes" % (r.returncode, len(procs)))
-    return procs, sysctl_int("vm.compressor_bytes_used"), sysctl_int("kern.memorystatus_vm_pressure_level")
+    return procs
 
 
-def stop_all(targets, grace_s):
-    """targets {pid: identity}. SIGTERM to all at once, one shared grace, SIGKILL to survivors.
+def sample():
+    """(procs {pid: (ppid, command)}, compressed bytes or None, pressure level or None)."""
+    return list_procs(), compressor_bytes(), sysctl_int("kern.memorystatus_vm_pressure_level")
+
+
+def new_descendants(targets, me):
+    """{pid: identity} of live processes below any target that are not targets yet (forked after the sample)."""
+    try:
+        procs = list_procs()
+    except SampleError:
+        return {}
+    skip = set(ancestors(procs, me)) | {me}
+    out = {}
+    for pid in procs:
+        if pid in targets or pid in skip:
+            continue
+        if any(a in targets for a in ancestors(procs, procs[pid][0])):
+            ident = identity(pid)
+            if ident is not None:
+                out[pid] = ident
+    return out
+
+
+def stop_all(targets, grace_s, refresh=None):
+    """targets {pid: identity}. Freeze every target (SIGSTOP), add processes forked meanwhile (refresh),
+    then SIGTERM + SIGCONT to all at once, one shared grace, SIGKILL to survivors.
 
     Returns {pid: gone | denied | terminated | killed}. A pid whose identity changed is never signalled.
     """
-    result = {}
+    targets, result = dict(targets), {}
 
     def send(pid, sig):
         if identity(pid) != targets[pid]:
@@ -274,10 +356,23 @@ def stop_all(targets, grace_s):
             return "denied"
         return None
 
+    pending = dict(targets)
+    for _ in range(4):  # a frozen tree cannot fork; a few rounds catch workers spawned in between
+        for pid in pending:
+            r = send(pid, signal.SIGSTOP)
+            if r:
+                result[pid] = r
+        pending = refresh(targets) if refresh else {}
+        if not pending:
+            break
+        targets.update(pending)
     for pid in targets:
-        r = send(pid, signal.SIGTERM)
-        if r:
-            result[pid] = r
+        if pid not in result:
+            r = send(pid, signal.SIGTERM)
+            if r:
+                result[pid] = r
+            else:
+                send(pid, signal.SIGCONT)
     end = time.monotonic() + grace_s
     while time.monotonic() < end and any(p not in result and identity(p) == targets[p] for p in targets):
         time.sleep(0.25)
@@ -309,7 +404,7 @@ def append_log(rec):
 
 def _name(cmd):
     """The runner's name (pytest, vitest, jest) rather than the interpreter's."""
-    names = [re.sub(r"\.m?js$", "", os.path.basename(t)) for t in cmd.split()]
+    names = [re.sub(r"^-\w*m|\.m?js$", "", os.path.basename(t)) for t in cmd.split()]
     return next((n for n in names if n in RUNNERS), names[0] if names else "?")
 
 
@@ -319,29 +414,60 @@ def _emit(out, code=0):
     return code
 
 
-def main():
+def _lock():
+    """(open lock file or None, error or None). Contention returns ("busy", None)."""
+    try:
+        LOCK.parent.mkdir(parents=True, exist_ok=True)
+        fh = LOCK.open("a")
+    except OSError as e:
+        return None, "lock: %s" % e
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.close()
+        return "busy", None
+    except OSError as e:
+        fh.close()
+        return None, "lock: %s" % e
+    return fh, None
+
+
+def main(me=None):
     if os.environ.get("ZS_MEMGUARD") == "0":
         return _emit({"status": "off", "summary": "ZS_MEMGUARD=0"})
-    LOCK.parent.mkdir(parents=True, exist_ok=True)
-    lock = LOCK.open("a")
-    try:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except OSError:
+    me = os.getpid() if me is None else me
+    lock, lock_error = _lock()
+    if lock == "busy":
         return _emit({"status": "busy", "summary": "another memguard is running"})
+    try:  # a lock error never skips the guard: run unlocked and report it
+        return _guard(me, [lock_error] if lock_error else [])
+    finally:
+        if lock is not None:
+            lock.close()
+
+
+def _guard(me, errors):
     cfg = config()
-    errors = list(cfg["errors"])
+    errors += cfg["errors"]
     try:
         procs, compressed, level = sample()
     except SampleError as e:
         return _emit({"status": "error", "summary": str(e), "errors": errors + [str(e)]}, 1)
     if compressed is None:
-        errors.append("vm.compressor_bytes_used unreadable")
+        errors.append("compressor size unreadable")
     if level is None:
         errors.append("kern.memorystatus_vm_pressure_level unreadable")
 
-    trees = []
-    for root, pids in runner_trees(procs, os.getpid()):
-        trees.append((root, sum(footprint(p) for p in pids), procs[root][1], pids))
+    trees, unreadable = [], 0
+    for root, pids in runner_trees(procs, me):
+        seen = {p: facts(p) for p in pids}
+        if seen[root] is None:
+            unreadable += 1  # the runner itself, not a worker that just exited
+        idents = {p: f[1] for p, f in seen.items() if f is not None}
+        if idents:
+            trees.append((root, sum(f[0] for f in seen.values() if f is not None), procs[root][1], idents))
+    if unreadable:
+        errors.append("%d runner footprint(s) unreadable" % unreadable)
     victims, pressure = decide(trees, compressed, level, cfg)
 
     rec = {
@@ -366,14 +492,14 @@ def main():
             errors.append("log: %s" % e)
         if not cfg["dry_run"]:
             targets = {}
-            for _, _, _, pids, _ in victims:
-                for p in pids:
-                    ident = identity(p)
-                    if ident is not None:
-                        targets[p] = ident
-            results = stop_all(targets, cfg["grace_s"])
-            for s, (_, _, _, pids, _) in zip(rec["stopped"], victims):
-                s["result"] = {str(p): results.get(p, "gone") for p in pids}
+            for _, _, _, idents, _ in victims:
+                targets.update(idents)  # identities from the sample, never re-read here
+            results = stop_all(targets, cfg["grace_s"], lambda t: new_descendants(t, me))
+            for row, (_, _, _, idents, _) in zip(rec["stopped"], victims):
+                row["result"] = {str(p): results.get(p, "gone") for p in idents}
+            late = sorted(p for p in results if p not in targets)
+            if late:
+                rec["late_workers"] = {str(p): results[p] for p in late}
             try:
                 append_log(dict(rec, phase="done"))
             except OSError as e:

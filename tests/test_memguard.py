@@ -30,13 +30,19 @@ def test_runner_detection():
     for cmd in (PY, "/x/.venv/bin/pytest tests", "/x/.venv/bin/python3.12 /x/.venv/bin/pytest -q",
                 "python3 -mpytest", "python -W ignore -X dev -m pytest -x", "python3 -u -m py.test",
                 "node /x/node_modules/.bin/vitest run", "node --max-old-space-size=8192 /x/node_modules/jest/bin/jest.js",
-                "bun /x/node_modules/vitest/vitest.mjs run", "vitest run", "jest --ci"):
+                "bun /x/node_modules/vitest/vitest.mjs run", "vitest run", "jest --ci", "python -Impytest -q",
+                "/opt/homebrew/Cellar/python@3.12/3.12.15/Frameworks/Python.framework/Versions/3.12/Resources/"
+                "Python.app/Contents/MacOS/Python /x/.venv/bin/pytest -q", "python -Wignore -m pytest",
+                "node --require hook.js /x/node_modules/vitest/vitest.mjs run", "bun test", "bun x vitest run",
+                "node --max-old-space-size 8192 /x/node_modules/.bin/jest"):
         assert mg.is_runner(cmd), cmd
     for cmd in ("claude -p fix pytest OOM in the vision suite", "codex exec run vitest and jest",
                 "python report.py --suite pytest", "python3 -c import pytest; pytest.main()",
                 "python3 memo_reader/pytest_helpers.py", "/Applications/T3 Code (Beta).app/Contents/MacOS/T3 Code",
                 "llama-server -m model.gguf", "uv run pytest -q", "node server.js --dir /tmp/jest",
-                "node /x/node_modules/jest-worker/build/workers/processChild.js", "/bin/zsh -c pytest -q", ""):
+                "node /x/node_modules/jest-worker/build/workers/processChild.js", "/bin/zsh -c pytest -q", "",
+                "python -cCODE pytest", "python3 -uc import x pytest", "node --title jest server.js",
+                "node -e require('jest') /x/jest", "python3 - pytest", "bun run dev"):
         assert not mg.is_runner(cmd), cmd
 
 
@@ -98,6 +104,11 @@ def test_config_rejects_bad_numbers():
             del os.environ[k]
     assert (cfg["keep_gb"], cfg["proc_gb"], cfg["grace_s"], cfg["compressed_gb"]) == (16.0, 32.0, 5.0, 16.0)
     assert len(cfg["errors"]) == 4
+    os.environ["ZS_MEMGUARD_GRACE_S"] = "45"   # both callers stop the guard after 60 s
+    try:
+        assert mg.config()["grace_s"] == 5.0
+    finally:
+        del os.environ["ZS_MEMGUARD_GRACE_S"]
 
 
 def test_stop_all_terminates_kills_and_never_signals_a_changed_pid():
@@ -121,28 +132,59 @@ def test_stop_all_terminates_kills_and_never_signals_a_changed_pid():
     assert mg.identity(soft.pid) is None
 
 
-def _run_main(fake_procs, compressed, level, env=None):
-    """main() with a stubbed sampler and footprint; stop_all records instead of signalling."""
-    calls = []
-    saved = (mg.sample, mg.footprint, mg.stop_all, mg.identity, mg.notify, mg.LOG, mg.LOCK)
-    tmp = Path(tempfile.mkdtemp())
-    mg.sample = lambda: (fake_procs, compressed, level)
-    mg.footprint = lambda pid: {11: 20 * GB, 12: 5 * GB, 20: 18 * GB, 30: 40 * GB}.get(pid, 0)
-    mg.stop_all = lambda targets, grace: calls.append(sorted(targets)) or {p: "terminated" for p in targets}
-    mg.identity = lambda pid: "id%d" % pid
-    mg.notify = lambda msg: None
-    mg.LOG, mg.LOCK = tmp / "log.jsonl", tmp / "lock"
-    os.environ.update(env or {})
+def test_stop_all_catches_workers_forked_during_shutdown():
+    # A parent that forks a new sleeper every 50 ms; only the parent is in the sampled targets.
+    code = ("import subprocess,sys,time\n"
+            "while True:\n    subprocess.Popen([sys.executable,'-c','import time; time.sleep(30)']); time.sleep(0.05)")
+    parent = subprocess.Popen([sys.executable, "-c", code])
     try:
-        import io
-        import contextlib
+        time.sleep(0.5)
+        got = mg.stop_all({parent.pid: mg.identity(parent.pid)}, 1.0, lambda t: mg.new_descendants(t, os.getpid()))
+        assert len(got) > 3 and parent.pid in got, got
+        time.sleep(0.3)
+        alive = [p for p in got if mg.identity(p) is not None and p != parent.pid]
+        assert not alive, alive
+    finally:
+        parent.kill()
+        parent.wait(5)
+
+
+def _isolated(fn):
+    """Run fn with LOG and LOCK in a temp dir and stdout captured; returns (fn result, stdout JSON)."""
+    import contextlib
+    import io
+    import shutil
+    saved, tmp = (mg.LOG, mg.LOCK), Path(tempfile.mkdtemp())
+    mg.LOG, mg.LOCK = tmp / "log.jsonl", tmp / "lock"
+    try:
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
-            code = mg.main()
-        log = [json.loads(x) for x in mg.LOG.read_text().splitlines()] if mg.LOG.exists() else []
-        return code, json.loads(buf.getvalue()), calls, log
+            res = fn(tmp)
+        return res, json.loads(buf.getvalue())
     finally:
-        mg.sample, mg.footprint, mg.stop_all, mg.identity, mg.notify, mg.LOG, mg.LOCK = saved
+        mg.LOG, mg.LOCK = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _run_main(fake_procs, compressed, level, env=None, sizes=None):
+    """main() with a stubbed sampler and facts; stop_all records instead of signalling."""
+    calls = []
+    sizes = sizes or {11: 20, 12: 5, 20: 18, 30: 40}
+    saved = (mg.sample, mg.facts, mg.stop_all, mg.notify)
+    mg.sample = lambda: (fake_procs, compressed, level)
+    mg.facts = lambda pid: (int(sizes[pid] * GB), "id%d" % pid) if pid in sizes else None
+    mg.stop_all = lambda targets, grace, refresh=None: calls.append(dict(targets)) or {p: "terminated" for p in targets}
+    mg.notify = lambda msg: None
+    os.environ.update(env or {})
+    try:
+        def go(tmp):
+            code = mg.main(me=999999)
+            log = [json.loads(x) for x in mg.LOG.read_text().splitlines()] if mg.LOG.exists() else []
+            return code, log
+        (code, log), out = _isolated(go)
+        return code, out, calls, log
+    finally:
+        mg.sample, mg.facts, mg.stop_all, mg.notify = saved
         for k in env or {}:
             del os.environ[k]
 
@@ -154,7 +196,7 @@ PROCS = {11: (1, PY), 12: (11, "python worker"), 20: (1, "node /x/node_modules/.
 def test_main_stops_whole_trees_and_logs_before_and_after():
     code, out, calls, log = _run_main(PROCS, 25 * GB, 1)
     assert code == 0 and out["status"] == "stopped", out
-    assert calls == [[11, 12]]                                       # pytest tree (25 GB); vitest (18 GB) kept
+    assert calls == [{11: "id11", 12: "id12"}]                       # sampled identities; vitest (18 GB) kept
     assert [r["phase"] for r in log] == ["stopping", "done"]
     assert log[1]["stopped"][0]["result"] == {"11": "terminated", "12": "terminated"}
     assert '"' not in out["summary"] and "pid 11" in out["summary"], out["summary"]
@@ -176,14 +218,37 @@ def test_main_reports_a_failed_process_list():
         raise mg.SampleError("ps exit 1, 0 processes")
     mg.sample = broken
     try:
-        import io
-        import contextlib
-        buf = io.StringIO()
-        with contextlib.redirect_stdout(buf):
-            code = mg.main()
+        code, out = _isolated(lambda tmp: mg.main(me=999999))
     finally:
         mg.sample = saved
-    assert code == 1 and json.loads(buf.getvalue())["status"] == "error"
+    assert code == 1 and out["status"] == "error"
+
+
+def test_main_reports_an_unreadable_runner_instead_of_counting_zero():
+    code, out, calls, _ = _run_main(PROCS, 25 * GB, 1, sizes={12: 5, 40: 1})
+    assert out["status"] == "degraded" and "2 runner footprint(s) unreadable" in out["summary"], out
+
+
+def test_lock_contention_is_busy_and_other_lock_errors_still_guard():
+    import errno
+    import fcntl
+    def held(tmp):
+        fh = mg.LOCK.open("a")
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        try:
+            return mg.main(me=999999)
+        finally:
+            fh.close()
+    assert _isolated(held)[1]["status"] == "busy"
+    saved, saved_sample = mg.fcntl.flock, mg.sample
+    def enolck(*a):
+        raise OSError(errno.ENOLCK, "No locks available")
+    mg.fcntl.flock, mg.sample = enolck, lambda: (PROCS, 1 * GB, 1)
+    try:
+        _, out = _isolated(lambda tmp: mg.main(me=999999))
+    finally:
+        mg.fcntl.flock, mg.sample = saved, saved_sample
+    assert out["status"] == "degraded" and "lock" in out["summary"], out
 
 
 def test_log_rotation_keeps_the_newer_half():

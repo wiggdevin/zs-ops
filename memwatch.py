@@ -175,7 +175,7 @@ def build_snapshot(mem, procs, reasons):
         "reasons": reasons,
         "memory": mem,
         "process_count": len(procs),
-        "thresholds": {"available_mb": THRESHOLD_MB, "process_count": PROC_MAX},
+        "thresholds": {"available_mb": THRESHOLD_MB, "process_count": PROC_MAX, "compressed_mb": COMPRESSED_MB},
         # Full command line kept: the 2026-07-30 diagnosis turned on spotting
         # which parent spawned the duplicates, which argv0 alone would have lost.
         "top_by_rss": [
@@ -278,7 +278,7 @@ def run_memguard():
             r = subprocess.run([sys.executable, str(guard)], capture_output=True, text=True, timeout=60)
             if r.returncode != 0 or not re.search(r'"status": "(ok|off|busy)"', r.stdout):  # quiet when idle
                 print(r.stdout.strip() or r.stderr.strip())
-        except subprocess.SubprocessError as e:
+        except (subprocess.SubprocessError, OSError) as e:  # OSError: fork or exec failed under pressure
             print("memguard failed: %s" % e, file=sys.stderr)
 
 
