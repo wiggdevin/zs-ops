@@ -494,7 +494,7 @@ def _guard(me, errors):
             targets = {}
             for _, _, _, idents, _ in victims:
                 targets.update(idents)  # identities from the sample, never re-read here
-            results = stop_all(targets, cfg["grace_s"], lambda t: new_descendants(t, me))
+            results = stop_all(targets, cfg["grace_s"])  # rescan off: round-3 review, frozen trees can outlive a stalled ps
             for row, (_, _, _, idents, _) in zip(rec["stopped"], victims):
                 row["result"] = {str(p): results.get(p, "gone") for p in idents}
             late = sorted(p for p in results if p not in targets)
