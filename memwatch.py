@@ -39,6 +39,7 @@ Snapshots:   ~/Library/Logs/zs-memwatch/
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -221,6 +222,7 @@ def last_snapshot_age():
 
 
 def main():
+    run_memguard()  # first: a slow sample or a failed write below must not skip it
     LOG_DIR.mkdir(parents=True, exist_ok=True)
 
     mem = memory_state()
@@ -264,7 +266,6 @@ def main():
     cap_trend_log()
 
     print(json.dumps(trend))
-    run_memguard()
 
 
 def run_memguard():
@@ -275,7 +276,7 @@ def run_memguard():
     if guard.exists():
         try:
             r = subprocess.run([sys.executable, str(guard)], capture_output=True, text=True, timeout=60)
-            if r.returncode != 0 or '"stopped": []' not in r.stdout:  # quiet when there was nothing to do
+            if r.returncode != 0 or not re.search(r'"status": "(ok|off|busy)"', r.stdout):  # quiet when idle
                 print(r.stdout.strip() or r.stderr.strip())
         except subprocess.SubprocessError as e:
             print("memguard failed: %s" % e, file=sys.stderr)

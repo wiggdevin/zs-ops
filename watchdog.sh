@@ -263,15 +263,17 @@ check_ollama() {
 # 142 GB on this 48 GB Mac). memguard.py stops only test runners, and memwatch runs it every
 # 60 s; this sweep is the backstop. A stop is "unhealthy" so the desktop alarm fires; a guard
 # that cannot run is unhealthy too.
-check_memguard() {
-  local out
-  if ! out="$(bounded 60 /usr/bin/python3 "$SCRIPT_DIR/memguard.py" 2>/dev/null)"; then
-    event memguard error "memguard.py failed"; return
-  fi
-  case "$out" in
-    *'"memguard": "off"'*) log_event memguard off none ;;
-    *'"stopped": []'*) event memguard healthy none ;;
-    *) event memguard stopped "$(printf '%s' "$out" | head -c 300)" ;;
+check_memguard() { # memguard.py prints one JSON line; status and summary hold no quotes
+  local out status summary
+  out="$(bounded 60 /usr/bin/python3 "${MEMGUARD_BIN:-$SCRIPT_DIR/memguard.py}" 2>/dev/null)"
+  status="$(printf '%s' "$out" | sed -n 's/.*"status": "\([a-z_]*\)".*/\1/p')"
+  summary="$(printf '%s' "$out" | sed -n 's/.*"summary": "\([^"]*\)".*/\1/p')"
+  case "$status" in
+    ok) event memguard healthy none ;;
+    off|busy|dry_run) log_event memguard "$status" "$summary" ;;
+    stopped) event memguard stopped "$summary" ;;
+    degraded|error) event memguard error "$summary" ;;
+    *) event memguard error "memguard.py gave no status" ;;
   esac
 }
 

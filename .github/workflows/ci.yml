@@ -9,11 +9,14 @@ jobs:
   check:
     runs-on: ubuntu-latest  # Blacksmith is installed on the ZeroSum-Solutions org only
     timeout-minutes: 10
+    strategy:
+      matrix:
+        python: ["3.9", "3.12"]  # 3.9 = macOS /usr/bin/python3, which runs memguard and memwatch
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
       - name: Shell syntax
         run: for f in *.sh lib/*.sh tests/*.sh; do bash -n "$f" && echo "ok $f"; done
       - name: Python syntax

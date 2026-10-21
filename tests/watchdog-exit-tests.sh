@@ -60,6 +60,7 @@ export PATH="$TMP_DIR/bin:$PATH"
 # here — exported once at the top so every subshell below inherits them.
 export TELEMETRY_LOG="$TMP_DIR/telemetry.jsonl"
 export MEM0_API="http://127.0.0.1:1"
+export ZS_MEMGUARD=0  # a sweep must never signal real test runs
 
 # Snapshot the live monitoring outputs so the suite can PROVE it stayed offline.
 LIVE_FILES="$HOME/Library/Logs/zs-telemetry.jsonl $HOME/Library/Logs/zs-watchdog.jsonl $HOME/Library/Logs/zs-watchdog-heartbeat"
