@@ -259,6 +259,22 @@ check_ollama() {
   else event ollama down heal-failed; fi
 }
 
+# Memory guard, added after the 2026-10-21 kernel panic (parallel vision pytest runs, about
+# 142 GB on this 48 GB Mac). memguard.py stops only test runners, and memwatch runs it every
+# 60 s; this sweep is the backstop. A stop is "unhealthy" so the desktop alarm fires; a guard
+# that cannot run is unhealthy too.
+check_memguard() {
+  local out
+  if ! out="$(bounded 60 /usr/bin/python3 "$SCRIPT_DIR/memguard.py" 2>/dev/null)"; then
+    event memguard error "memguard.py failed"; return
+  fi
+  case "$out" in
+    *'"memguard": "off"'*) log_event memguard off none ;;
+    *'"stopped": []'*) event memguard healthy none ;;
+    *) event memguard stopped "$(printf '%s' "$out" | head -c 300)" ;;
+  esac
+}
+
 check_backup_freshness() {
   local newest
   newest="$(ls -t "$BACKUP_DIR"/zs-memory-backup-*.db.gz 2>/dev/null | head -1)"
@@ -521,6 +537,7 @@ main() {
     if command -v orb >/dev/null 2>&1; then check_orbstack; else event orbstack absent none; fi
     if command -v docker >/dev/null 2>&1; then check_docker_engine; fi
   fi
+  check_memguard
   check_zs_memory
   check_ollama
   check_backup_freshness

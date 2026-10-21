@@ -20,11 +20,14 @@ Every run appends one compact line to the JSONL trend log. Only a triggered run
 writes a full snapshot, and snapshots are rate-limited and capped in count so
 this can never become the next uncapped log.
 
+Each run also calls memguard.py, which stops runaway test runners (2026-10-21).
+
 Runs on /usr/bin/python3 (system python, 3.9) so it has no mise/venv dependency.
 
 Tuning (env):
   ZS_MEMWATCH_THRESHOLD_MB     available-RAM trigger, MB          (default 4096)
   ZS_MEMWATCH_PROC_MAX         process-count trigger              (default 1200)
+  ZS_MEMWATCH_COMPRESSED_MB    compressor-size trigger, MB        (default 12288)
   ZS_MEMWATCH_MIN_INTERVAL     min seconds between snapshots      (default 300)
   ZS_MEMWATCH_KEEP             snapshots retained                 (default 200)
   ZS_MEMWATCH_TREND_CAP        trend-log size cap, bytes          (default 5MB)
@@ -37,6 +40,7 @@ Snapshots:   ~/Library/Logs/zs-memwatch/
 import json
 import os
 import subprocess
+import sys
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -45,6 +49,9 @@ LOG_DIR = Path.home() / "Library/Logs/zs-memwatch"
 TREND_LOG = Path.home() / "Library/Logs/zs-memwatch.jsonl"
 
 THRESHOLD_MB = int(os.environ.get("ZS_MEMWATCH_THRESHOLD_MB", 4096))
+# vm_stat "available" counts inactive pages and never fell below 6.6 GB in the
+# 2026-10-21 panic, while the compressor went from 1.3 GB to 25 GB. This catches that.
+COMPRESSED_MB = int(os.environ.get("ZS_MEMWATCH_COMPRESSED_MB", 12288))
 PROC_MAX = int(os.environ.get("ZS_MEMWATCH_PROC_MAX", 1200))
 MIN_INTERVAL = int(os.environ.get("ZS_MEMWATCH_MIN_INTERVAL", 300))
 KEEP = int(os.environ.get("ZS_MEMWATCH_KEEP", 200))
@@ -224,6 +231,8 @@ def main():
         reasons.append("low_memory")
     if len(procs) > PROC_MAX:
         reasons.append("process_count")
+    if mem["compressed_mb"] > COMPRESSED_MB:
+        reasons.append("compressor")
     if FORCE:
         reasons.append("forced")
 
@@ -255,6 +264,21 @@ def main():
     cap_trend_log()
 
     print(json.dumps(trend))
+    run_memguard()
+
+
+def run_memguard():
+    """Every minute, not only every 5-minute watchdog sweep: on 2026-10-21 memory went from
+    fine to nearly full in 2 minutes. Separate process, so a guard failure never stops the
+    trend log."""
+    guard = Path(__file__).resolve().parent / "memguard.py"
+    if guard.exists():
+        try:
+            r = subprocess.run([sys.executable, str(guard)], capture_output=True, text=True, timeout=60)
+            if r.returncode != 0 or '"stopped": []' not in r.stdout:  # quiet when there was nothing to do
+                print(r.stdout.strip() or r.stderr.strip())
+        except subprocess.SubprocessError as e:
+            print("memguard failed: %s" % e, file=sys.stderr)
 
 
 if __name__ == "__main__":

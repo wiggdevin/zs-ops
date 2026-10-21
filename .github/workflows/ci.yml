@@ -21,6 +21,6 @@ jobs:
       - name: JSON config
         run: for f in *.json; do python -m json.tool "$f" > /dev/null && echo "ok $f"; done
       - name: Portable tests
-        run: python tests/test_inbox_sweep_reap.py && python tests/test_desktop_clean.py
+        run: python tests/test_inbox_sweep_reap.py && python tests/test_desktop_clean.py && python tests/test_memguard.py
 # The watchdog suites (tests/watchdog-*-tests.sh) need macOS launchctl and BSD stat;
 # run them locally before landing: for t in tests/watchdog-*-tests.sh; do bash "$t"; done
