@@ -14,7 +14,7 @@ Every item on the Desktop other than the two aliases is handled in one pass:
   5. Everything else, folders included, moves to ~/Inbox/<type>/<project>/<YYYY-MM>/ under the
      name YYYY-MM-DD-<project>-<subject>.<ext> (project: registry alias, then Jev).
 
-Never touches git repos or anything modified in the last 10 minutes, never overwrites, and
+Never touches git repos, folders holding a .desktop-keep file, or anything modified in the last 10 minutes, never overwrites, and
 never deletes outright: Trash is a no-replace rename of the item itself (never what a link
 points to) into ~/.Trash, re-checked right before it happens, and every action is written to a
 manifest and journal (undo: org/org_router.py undo --manifest F). It shares the sweep lock with
@@ -51,6 +51,7 @@ STATE_DIR = ORG / "state"
 MANIFEST_DIR = ORG / "manifests"
 LOG = HOME / "Library/Logs/zs-ai-os/desktop-clean.log"
 DESKTOP_KEEP = {"Projects", "Inbox"}
+KEEP_MARKER = ".desktop-keep"  # a Desktop folder holding this file stays put
 PARTIAL_EXTS = {".crdownload", ".download", ".part", ".partial", ".tmp"}
 INSTALLER_EXTS = {".dmg", ".pkg"}
 GROUP_MIN = 3
@@ -295,6 +296,9 @@ def classify(now: float, lines, stamp: str, by_size=None, apps_of=dmg_apps):
             continue
         if p.suffix.lower() in PARTIAL_EXTS:
             skips.append({"src": e.path, "reason": "partial-download"})
+            continue
+        if e.is_dir(follow_symlinks=False) and (p / KEEP_MARKER).exists():
+            skips.append({"src": e.path, "reason": "keep-marker"})
             continue
         try:
             st = os.lstat(e.path)
