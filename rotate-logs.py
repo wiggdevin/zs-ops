@@ -61,10 +61,10 @@ SKIP_PREFIXES = ("/opt/homebrew/", "/usr/local/Cellar/", "/opt/local/")
 
 # Confinement. A plist is just a config file: a wrong or stale one could name a
 # database, a document, or a backup, and this truncates whatever it is handed.
-# All 71 real targets on this machine end in .log/.err/.out, so requiring that
-# suffix costs nothing and turns "truncate the user's sqlite file" into a logged
+# All 71 real launchd targets on this machine end in .log/.err/.out (.jsonl is for
+# the watchdog event log in EXTRA_LOGS), so requiring that suffix costs nothing and turns "truncate the user's sqlite file" into a logged
 # skip. Anything new that legitimately needs rotating gets renamed or added here.
-LOG_SUFFIXES = (".log", ".err", ".out")
+LOG_SUFFIXES = (".log", ".err", ".out", ".jsonl")
 
 # Non-launchd logs worth capping. The Ollama GUI writes these directly rather than
 # through launchd, so O_APPEND is NOT guaranteed — a non-append writer holding an
@@ -73,6 +73,9 @@ LOG_SUFFIXES = (".log", ".err", ".out")
 EXTRA_LOGS = [
     os.path.expanduser("~/.ollama/logs/app.log"),
     os.path.expanduser("~/.ollama/logs/server.log"),
+    # watchdog.sh appends one line per component every sweep and never trims it
+    # (22 MB by 2026-10-23). Short >> appends, so the open-holder check rarely skips.
+    os.path.expanduser("~/Library/Logs/zs-watchdog.jsonl"),
 ]
 
 # This job's own redirects. Rotating a file we are actively writing to is a
@@ -185,7 +188,9 @@ def has_open_holders(path: str) -> bool:
                            capture_output=True, timeout=10)
     except (OSError, subprocess.SubprocessError):
         return True
-    if r.stdout.strip():
+    # rotate() holds its own descriptor on the file while asking, so lsof always
+    # lists this process; without excluding it every EXTRA_LOGS file was skipped.
+    if set(r.stdout.split()) - {str(os.getpid()).encode()}:
         return True
     if r.returncode not in (0, 1) or r.stderr.strip():
         return True  # errored rather than genuinely reporting no holders
