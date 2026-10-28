@@ -38,6 +38,11 @@ cat > "$TMP_DIR/bin/docker" <<'STUB'
 [ -n "${STUB_FAIL:-}" ] && exit 1
 exit 0
 STUB
+# check_ollama heals with `open -g -j -a Ollama`; never launch the real app from a test.
+cat > "$TMP_DIR/bin/open" <<'STUB'
+#!/bin/sh
+exit 0
+STUB
 cat > "$TMP_DIR/bin/osascript" <<'STUB'
 #!/bin/sh
 exit 0
@@ -61,6 +66,7 @@ export PATH="$TMP_DIR/bin:$PATH"
 export TELEMETRY_LOG="$TMP_DIR/telemetry.jsonl"
 export MEM0_API="http://127.0.0.1:1"
 export ZS_MEMGUARD=0  # a sweep must never signal real test runs
+export OLLAMA_HEAL_TRIES=1  # the unhealthy sweeps need not wait for Ollama to come back
 
 # Snapshot the live monitoring outputs so the suite can PROVE it stayed offline.
 LIVE_FILES="$HOME/Library/Logs/zs-telemetry.jsonl $HOME/Library/Logs/zs-watchdog.jsonl $HOME/Library/Logs/zs-watchdog-heartbeat"
