@@ -251,12 +251,37 @@ check_zs_memory() {
 
 check_ollama() {
   if http_ok "$OLLAMA_API/api/tags"; then event ollama healthy none; return; fi
-  # Ollama runs as the APP cask via the com.zs.ollama LaunchAgent (the brew FORMULA ships
-  # no llama-server runner). Heal by kicking that agent, NOT `brew services start ollama`.
-  heal ollama-start bounded 20 launchctl kickstart -k "gui/$(id -u)/com.zs.ollama"
-  sleep 3
-  if http_ok "$OLLAMA_API/api/tags"; then event ollama healthy restarted
-  else event ollama down heal-failed; fi
+  # Ollama.app (the cask, a login item) owns the server: it starts `ollama serve`, restarts it,
+  # and stops any other server it finds on :11434 ("stopped external ollama process"). The
+  # com.zs.ollama LaunchAgent lost that race at every login and crash-looped on "address
+  # already in use", so it was retired on 2026-10-27 (plist kept in ~/Backups/launchagents/).
+  # Heal by launching the app, hidden and in the background; NOT `brew services start ollama`
+  # (the brew FORMULA ships no llama-server runner) and NOT a second `ollama serve`.
+  heal ollama-start bounded 20 open -g -j -a Ollama
+  local i
+  for i in $(seq 1 "${OLLAMA_HEAL_TRIES:-4}"); do
+    sleep 3
+    if http_ok "$OLLAMA_API/api/tags"; then event ollama healthy restarted; return; fi
+  done
+  event ollama down heal-failed
+}
+
+# Memory guard, added after the 2026-10-21 kernel panic (parallel vision pytest runs, about
+# 142 GB on this 48 GB Mac). memguard.py stops only test runners, and memwatch runs it every
+# 60 s; this sweep is the backstop. A stop is "unhealthy" so the desktop alarm fires; a guard
+# that cannot run is unhealthy too.
+check_memguard() { # memguard.py prints one JSON line; status and summary hold no quotes
+  local out status summary
+  out="$(bounded 60 /usr/bin/python3 "${MEMGUARD_BIN:-$SCRIPT_DIR/memguard.py}" 2>/dev/null)"
+  status="$(printf '%s' "$out" | sed -n 's/.*"status": "\([a-z_]*\)".*/\1/p')"
+  summary="$(printf '%s' "$out" | sed -n 's/.*"summary": "\([^"]*\)".*/\1/p')"
+  case "$status" in
+    ok) event memguard healthy none ;;
+    off|busy|dry_run) log_event memguard "$status" "$summary" ;;
+    stopped) event memguard stopped "$summary" ;;
+    degraded|error|partial) event memguard error "$summary" ;;
+    *) event memguard error "memguard.py gave no status" ;;
+  esac
 }
 
 check_backup_freshness() {
@@ -521,6 +546,7 @@ main() {
     if command -v orb >/dev/null 2>&1; then check_orbstack; else event orbstack absent none; fi
     if command -v docker >/dev/null 2>&1; then check_docker_engine; fi
   fi
+  check_memguard
   check_zs_memory
   check_ollama
   check_backup_freshness

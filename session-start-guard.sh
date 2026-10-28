@@ -31,7 +31,7 @@ echo "── memory stack pre-flight ──"
 if http_ok "$MEMORY_API/health"; then ok "zs-memory :8765"
 else bad "zs-memory :8765 (launchctl kickstart -k gui/\$(id -u)/com.zs.memory)"; fi
 if http_ok "$OLLAMA_API/api/tags"; then ok "ollama :11434 compatibility embeddings"
-else bad "ollama :11434 embeddings (launchctl kickstart -k gui/\$(id -u)/com.zs.ollama)"; fi
+else bad "ollama :11434 embeddings (open -g -j -a Ollama; Ollama.app owns the server)"; fi
 
 # Self-heal the op-guard PATH shim (default-deny for the 1Password CLI). The shim shadows
 # `op` on PATH so by-name invocations refuse unless ZS_ALLOW_OP=1; the PATH wiring lives in
