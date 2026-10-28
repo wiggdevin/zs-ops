@@ -58,7 +58,7 @@ while IFS= read -r v; do
     */.aws/*|*/.aws|*.aws/credentials*) deny "aws credential tree" ;;
     */.zsvault) deny "zs vault directory" ;;
     *zs-api-keys.env) deny "zs-api-keys env" ;;
-    */.zsvault/unlocked.env|*/.zsvault/fingerprint-backup.key|*/.zsvault/se-identity.txt) deny "zs vault plaintext" ;;
+    */.zsvault/unlocked.env|*/.zsvault/fingerprint-backup.key|*/.zsvault/se-identity*) deny "zs vault plaintext" ;;
     *.credentials.json) deny "claude credentials" ;;
     *oauth_creds.json*|*oauth-token*|*mcp_oauth_tokens.json*|*/clerk-tokens.json) deny "oauth token store" ;;
     */.codex/auth.json*) deny "codex login token" ;;
