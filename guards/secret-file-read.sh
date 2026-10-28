@@ -56,7 +56,8 @@ while IFS= read -r v; do
   case "$v" in
     *.ssh/*|*/.ssh/*|*/.ssh) deny "ssh keys" ;;
     */.aws/*|*/.aws|*.aws/credentials*) deny "aws credential tree" ;;
-    */.zsvault) deny "zs vault directory" ;;
+    # the whole vault directory is secret, tmp/ and every other file included (2026-10-27)
+    */.zsvault|*/.zsvault/*|.zsvault|.zsvault/*) deny "zs vault directory" ;;
     *zs-api-keys.env) deny "zs-api-keys env" ;;
     */.zsvault/unlocked.env|*/.zsvault/fingerprint-backup.key|*/.zsvault/se-identity*) deny "zs vault plaintext" ;;
     *.credentials.json) deny "claude credentials" ;;
