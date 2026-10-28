@@ -45,9 +45,14 @@ fi
 
 # APFS is case-insensitive, so match a lowercased copy (one tr for all values).
 STRINGS=$(printf '%s' "$STRINGS" | tr '[:upper:]' '[:lower:]')
+HOME_LC=$(printf '%s' "${HOME:-/nonexistent}" | tr '[:upper:]' '[:lower:]')
 while IFS= read -r v; do
   # Trailing separators (~/.zsvault/) must not dodge the directory rules.
   while [ "${#v}" -gt 1 ] && [ "${v%/}" != "$v" ]; do v=${v%/}; done
+  # .netrc and .npmrc hold tokens only in the home dir; a project .npmrc stays readable.
+  if [[ $v =~ ^(/users/[^/]+|~)/\.(netrc|npmrc)$ ]] || [ "$v" = "$HOME_LC/.netrc" ] || [ "$v" = "$HOME_LC/.npmrc" ]; then
+    deny "netrc/npmrc credentials"
+  fi
   case "$v" in
     *.ssh/*|*/.ssh/*|*/.ssh) deny "ssh keys" ;;
     */.aws/*|*/.aws|*.aws/credentials*) deny "aws credential tree" ;;
@@ -56,6 +61,7 @@ while IFS= read -r v; do
     */.zsvault/unlocked.env|*/.zsvault/fingerprint-backup.key|*/.zsvault/se-identity.txt) deny "zs vault plaintext" ;;
     *.credentials.json) deny "claude credentials" ;;
     *oauth_creds.json*|*oauth-token*|*mcp_oauth_tokens.json*|*/clerk-tokens.json) deny "oauth token store" ;;
+    */.codex/auth.json*) deny "codex login token" ;;
   esac
 done <<< "$STRINGS"
 
