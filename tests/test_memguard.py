@@ -34,7 +34,7 @@ def test_runner_detection():
                 "/opt/homebrew/Cellar/python@3.12/3.12.15/Frameworks/Python.framework/Versions/3.12/Resources/"
                 "Python.app/Contents/MacOS/Python /x/.venv/bin/pytest -q", "python -Wignore -m pytest",
                 "node --require hook.js /x/node_modules/vitest/vitest.mjs run", "bun test", "bun x vitest run",
-                "node --max-old-space-size 8192 /x/node_modules/.bin/jest"):
+                "node --max-old-space-size 8192 /x/node_modules/.bin/jest", "bun --cwd /x test"):
         assert mg.is_runner(cmd), cmd
     for cmd in ("claude -p fix pytest OOM in the vision suite", "codex exec run vitest and jest",
                 "python report.py --suite pytest", "python3 -c import pytest; pytest.main()",
@@ -42,7 +42,8 @@ def test_runner_detection():
                 "llama-server -m model.gguf", "uv run pytest -q", "node server.js --dir /tmp/jest",
                 "node /x/node_modules/jest-worker/build/workers/processChild.js", "/bin/zsh -c pytest -q", "",
                 "python -cCODE pytest", "python3 -uc import x pytest", "node --title jest server.js",
-                "node -e require('jest') /x/jest", "python3 - pytest", "bun run dev"):
+                "node -e require('jest') /x/jest", "python3 - pytest", "bun run dev",
+                "bun --cwd /tmp/jest run dev", "bun --config /x/vitest run dev", "node --eval=0 /tmp/jest"):
         assert not mg.is_runner(cmd), cmd
 
 
@@ -166,14 +167,14 @@ def _isolated(fn):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-def _run_main(fake_procs, compressed, level, env=None, sizes=None):
+def _run_main(fake_procs, compressed, level, env=None, sizes=None, outcome="terminated"):
     """main() with a stubbed sampler and facts; stop_all records instead of signalling."""
     calls = []
     sizes = sizes or {11: 20, 12: 5, 20: 18, 30: 40}
     saved = (mg.sample, mg.facts, mg.stop_all, mg.notify)
     mg.sample = lambda: (fake_procs, compressed, level)
     mg.facts = lambda pid: (int(sizes[pid] * GB), "id%d" % pid) if pid in sizes else None
-    mg.stop_all = lambda targets, grace, refresh=None: calls.append(dict(targets)) or {p: "terminated" for p in targets}
+    mg.stop_all = lambda targets, grace, refresh=None: calls.append(dict(targets)) or {p: outcome for p in targets}
     mg.notify = lambda msg: None
     os.environ.update(env or {})
     try:
@@ -200,6 +201,36 @@ def test_main_stops_whole_trees_and_logs_before_and_after():
     assert [r["phase"] for r in log] == ["stopping", "done"]
     assert log[1]["stopped"][0]["result"] == {"11": "terminated", "12": "terminated"}
     assert '"' not in out["summary"] and "pid 11" in out["summary"], out["summary"]
+
+
+def test_main_does_not_report_a_clean_stop_when_a_signal_was_denied():
+    code, out, calls, log = _run_main(PROCS, 25 * GB, 1, outcome="denied")
+    assert out["status"] == "partial" and "could not be signalled" in out["summary"], out
+    assert any("could not signal" in e for e in out["errors"]), out
+
+
+def test_stop_all_resumes_a_frozen_pid_it_could_not_finish():
+    saved = (mg.identity, mg.os.kill)
+    try:
+        sent, seq = [], iter(["runner"])
+        mg.identity = lambda pid: next(seq, None)            # readable for SIGSTOP, then unreadable
+        mg.os.kill = lambda pid, sig: sent.append((pid, sig))
+        assert mg.stop_all({41: "runner"}, 0.0) == {41: "gone"}
+        assert sent[0] == (41, mg.signal.SIGSTOP) and sent[-1] == (41, mg.signal.SIGCONT), sent
+
+        sent.clear()
+        mg.identity = lambda pid: "runner"
+
+        def kill(pid, sig):
+            sent.append((pid, sig))
+            if sig == mg.signal.SIGTERM:
+                raise PermissionError
+
+        mg.os.kill = kill
+        assert mg.stop_all({41: "runner"}, 0.0) == {41: "denied"}   # SIGTERM refused after SIGSTOP
+        assert sent[-1] == (41, mg.signal.SIGCONT), sent
+    finally:
+        mg.identity, mg.os.kill = saved
 
 
 def test_main_dry_run_and_degraded_and_ok():

@@ -96,6 +96,7 @@ def config():
 PY_SCRIPT_RUNNERS = {"pytest", "py.test"}
 NODE_OPTS_WITH_ARG = {"-r", "--require", "--import", "--loader", "--experimental-loader", "--title", "-C",
                       "--conditions", "--env-file", "--input-type", "--inspect-port", "--max-old-space-size"}
+BUN_OPTS_WITH_ARG = {"--cwd", "-c", "--config", "--env-file", "--preload", "-r", "--filter", "--port"}
 NODE_CODE_OPTS = {"-e", "--eval", "-p", "--print", "-i", "--interactive", "-"}
 
 
@@ -128,16 +129,19 @@ def _python_runs_pytest(args):
 
 def _node_runs_runner(args, bun):
     i = 0
-    if bun and args and args[0] == "test":
-        return True  # bun's own test runner
-    if bun and args and args[0] in ("run", "x"):
-        i = 1
+    if bun:  # leading options (bun --cwd DIR test) come before the subcommand
+        while i < len(args) and args[i].startswith("-"):
+            i += 2 if (args[i] in BUN_OPTS_WITH_ARG and "=" not in args[i]) else 1
+        if i < len(args) and args[i] == "test":
+            return True  # bun's own test runner
+        if i < len(args) and args[i] in ("run", "x"):
+            i += 1
     while i < len(args):
         t = args[i]
-        if t in NODE_CODE_OPTS:
+        if t in NODE_CODE_OPTS or t.startswith(("--eval=", "--print=")):
             return False
         if t.startswith("-"):
-            i += 2 if (t in NODE_OPTS_WITH_ARG and "=" not in t) else 1
+            i += 2 if ((t in NODE_OPTS_WITH_ARG or (bun and t in BUN_OPTS_WITH_ARG)) and "=" not in t) else 1
             continue
         return os.path.basename(t) in JS_RUNNER_SCRIPTS
     return False
@@ -356,12 +360,14 @@ def stop_all(targets, grace_s, refresh=None):
             return "denied"
         return None
 
-    pending = dict(targets)
+    pending, frozen = dict(targets), set()
     for _ in range(4):  # a frozen tree cannot fork; a few rounds catch workers spawned in between
         for pid in pending:
             r = send(pid, signal.SIGSTOP)
             if r:
                 result[pid] = r
+            else:
+                frozen.add(pid)
         pending = refresh(targets) if refresh else {}
         if not pending:
             break
@@ -379,6 +385,12 @@ def stop_all(targets, grace_s, refresh=None):
     for pid in targets:
         if pid not in result:
             result[pid] = (send(pid, signal.SIGKILL) or "killed") if identity(pid) == targets[pid] else "terminated"
+    for pid in frozen:  # a pid we froze must never stay frozen: its identity went unreadable or SIGTERM was refused
+        if result.get(pid) in ("gone", "denied"):
+            try:
+                os.kill(pid, signal.SIGCONT)  # harmless if the pid is gone or now belongs to another process
+            except OSError:
+                pass
     return result
 
 
@@ -507,6 +519,11 @@ def _guard(me, errors):
             verb = "Stopped"
         notify("%s %d test run(s): %s" % (verb, len(victims), names))
         status, summary = ("dry_run" if cfg["dry_run"] else "stopped"), "%s %s" % (verb.lower(), names)
+        if not cfg["dry_run"]:
+            denied = sorted(p for p, r in results.items() if r == "denied")
+            if denied:  # a signal that was refused stopped nothing: do not report a clean stop
+                errors.append("could not signal pid(s): %s" % ", ".join(map(str, denied)))
+                status, summary = "partial", "%s, but %d pid(s) could not be signalled" % (summary, len(denied))
     else:
         status = "degraded" if errors else "ok"
         summary = "; ".join(errors) if errors else "%d runner tree(s), %.1f GB" % (

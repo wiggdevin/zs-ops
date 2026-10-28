@@ -279,7 +279,7 @@ check_memguard() { # memguard.py prints one JSON line; status and summary hold n
     ok) event memguard healthy none ;;
     off|busy|dry_run) log_event memguard "$status" "$summary" ;;
     stopped) event memguard stopped "$summary" ;;
-    degraded|error) event memguard error "$summary" ;;
+    degraded|error|partial) event memguard error "$summary" ;;
     *) event memguard error "memguard.py gave no status" ;;
   esac
 }
