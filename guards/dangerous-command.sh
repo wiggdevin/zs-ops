@@ -154,8 +154,13 @@ FIND_DELETE_PATTERN="(^|[^[:alnum:]_.-])find[[:space:]]+[\"']?${RM_TARGET}[\"']?
 # Command position for sudo: start of line, after ; & | ( { ` ! or a quote, or after
 # then/else/do; env assignments and common wrappers may sit in front. A bare word
 # elsewhere (`git commit -m 'document sudo usage'`) is not a sudo call (2026-10-27).
-CMD_POS="(^|[;&|()\`{!]|(-[a-zA-Z]*c|eval)[[:space:]]+[\"']|(^|[;&|()\`{])[[:space:]]*(then|else|do|elif|if|while|until))[[:space:]]*"
+# The script of `env -S` / `--split-string` is a command too, quoted, joined or bare:
+# `env -S 'sudo id'`, `env -S'sudo id'`, `env --split-string='sudo id'`, `env -iS 'sudo id'`
+# (2026-10-28). That env must itself sit in command position, so `git commit -m 'env -S sudo'`
+# stays free.
 CMD_WRAPS="((command|builtin|exec|nohup|nice|time|xargs|env|doas)(([[:space:]]+-[^[:space:]]+)([[:space:]]+[^-[:space:]][^[:space:]]*)?)*[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*"
+ENV_SPLIT_POS="(^|[;&|()\`{!]|(-[a-zA-Z]*c|eval)[[:space:]]+[\"'])[[:space:]]*((command|builtin|exec|nohup|nice|time|doas)[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|()]*/)?env([[:space:]]+[^[:space:];&|]+)*[[:space:]]+(-[a-zA-Z]*S|--split-string)(=|[[:space:]]*)[\"']?"
+CMD_POS="(^|[;&|()\`{!]|(-[a-zA-Z]*c|eval)[[:space:]]+[\"']|${ENV_SPLIT_POS}|(^|[;&|()\`{])[[:space:]]*(then|else|do|elif|if|while|until))[[:space:]]*"
 SHELL_WORDS="(bash|sh|zsh|fish|dash|ksh)"
 
 # ── quote-masked copy of the command, for the command-position anchors (2026-10-27) ──
@@ -316,10 +321,78 @@ BEGIN { RS = "\001"; sq = "\047"; dq = "\042"; bt = "\140" }
   endword(); segend()
   printf "%s", (risky ? s : out)
 }'
+# ── here-doc bodies that are only text (2026-10-28) ──
+# A here-doc fed to a command that only reads or stores text (`cat > notes.md <<'EOF'`,
+# `git commit -m "$(cat <<'EOF' …)"`) runs nothing, so a body line that starts with `sudo`
+# starts no command. This copy drops such bodies, the operator and the end word. All or
+# nothing: the command is left as typed when any here-doc feeds another command, a body with
+# an unquoted end word holds `$(` or a backtick, a here-string or unended body appears, or
+# what is left runs a shell, an interpreter, eval/source/xargs/ssh or a path-named program
+# (which could run a file the here-doc just wrote). Lexical, like the mask below.
+AWK_HEREDOC='function sink(before,   i, c, n, w, a, b) {
+  for (i = length(before); i > 0; i--) { c = substr(before, i, 1); if (index(";&|(" bt, c) > 0) break }
+  n = split(substr(before, i + 1), w, /[ \t]+/)
+  for (i = 1; i <= n; i++) {
+    if (w[i] == "" || w[i] ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || w[i] ~ /^(command|builtin|nohup|time|noglob|!|[{])$/) continue
+    b = w[i]; sub(/.*\//, "", b)
+    if (b == "git") return msgfile(w, i, n, "^(commit|tag|notes)$", "^(-[A-Za-z]*F|--file(=.*)?)$")
+    if (b == "gh") return msgfile(w, i, n, "^(pr|issue|release|api)$", "^(-F|--body-file(=.*)?|--notes-file(=.*)?|--input)$")
+    return (b ~ /^(cat|tee|head|tail|wc|sort|uniq|grep|egrep|fgrep|rg|jq|cut|tr|nl|column|fold|rev|diff|cmp|pbcopy|base64|od|xxd)$/)
+  }
+  return 0
+}
+# git commit/tag/notes -F - and gh --body-file - read the body as a message; git -c can define
+# an alias that runs a shell, so it never counts
+function msgfile(w, ci, n, subre, flagre,   i, sub1, fl) {
+  sub1 = ""; fl = 0
+  for (i = ci + 1; i <= n; i++) {
+    if (w[i] ~ /^(-c|--config-env|--exec-path)/) return 0
+    if (sub1 == "" && w[i] !~ /^-/ && w[i - 1] != "-C" && w[i - 1] != "-R") sub1 = w[i]
+    if (w[i] ~ flagre) fl = 1
+  }
+  return (sub1 ~ subre && fl)
+}
+BEGIN { RS = "\001"; sq = "\047"; bt = "\140" }
+{
+  s = $0; n = split(s, L, "\n"); out = ""; ok = 1; qh = 1; nq = 0
+  for (i = 1; i <= n; i++) {
+    line = L[i]
+    if (qh <= nq) {
+      t = line; if (QT[qh]) sub(/^\t+/, "", t)
+      if (t == QD[qh]) { qh++; if (qh > nq) { qh = 1; nq = 0 } }
+      else if (!QQ[qh] && (index(line, "$(") > 0 || index(line, bt) > 0)) ok = 0
+      out = out (i > 1 ? "\n" : "")
+      continue
+    }
+    rest = line; done = ""
+    while (match(rest, /<<-?[ \t]*(\\?[A-Za-z0-9_.-]+|\047[^\047]+\047|"[^"]+")/)) {
+      before = done substr(rest, 1, RSTART - 1)
+      if (RSTART > 1 && substr(rest, RSTART - 1, 1) == "<") ok = 0
+      tok = substr(rest, RSTART, RLENGTH)
+      d = substr(tok, 3); dash = (substr(d, 1, 1) == "-"); if (dash) d = substr(d, 2)
+      sub(/^[ \t]+/, "", d)
+      q = (substr(d, 1, 1) == sq || substr(d, 1, 1) == "\"" || substr(d, 1, 1) == "\\")
+      gsub(/[\047"\\]/, "", d)
+      if (!sink(before)) ok = 0
+      nq++; QD[nq] = d; QT[nq] = dash; QQ[nq] = q
+      done = before; rest = substr(rest, RSTART + RLENGTH)
+    }
+    if (index(rest, "<<") > 0) ok = 0
+    out = out (i > 1 ? "\n" : "") done rest
+  }
+  if (nq > 0) ok = 0
+  if (out ~ /(^|[^[:alnum:]_.-])(bash|sh|zsh|dash|ksh|fish|source|eval|exec|xargs|ssh|su|watch|parallel|osascript|python[0-9.]*|node|perl|ruby|deno|bun|php)([^[:alnum:]_.-]|$)/) ok = 0
+  if (out ~ /(^|[;&|(`{!\n])[ \t]*([A-Za-z_][A-Za-z0-9_]*=[^ \t]*[ \t]+)*([.~]|[^ \t;&|()]*\/)/) ok = 0
+  printf "%s", (ok ? out : s)
+}'
 mask_cmd() {  # mask_cmd <command>: the masked copy, or the command itself when nothing applies
   local m
   case "$1" in
-    *'<<'*) printf '%s' "$1"; return ;;
+    *'<<'*)
+      m=$(printf '%s' "$1" | awk "$AWK_HEREDOC" 2>/dev/null) || m=""
+      case "$m" in ''|*'<<'*) printf '%s' "$1"; return ;; esac
+      set -- "$m"
+      case "$1" in *[\'\"]*) : ;; *) printf '%s' "$1"; return ;; esac ;;
     *[\'\"]*) : ;;
     *) printf '%s' "$1"; return ;;
   esac
