@@ -156,10 +156,10 @@ FIND_DELETE_PATTERN="(^|[^[:alnum:]_.-])find[[:space:]]+[\"']?${RM_TARGET}[\"']?
 # elsewhere (`git commit -m 'document sudo usage'`) is not a sudo call (2026-10-27).
 # The script of `env -S` / `--split-string` is a command too, quoted, joined or bare:
 # `env -S 'sudo id'`, `env -S'sudo id'`, `env --split-string='sudo id'`, `env -iS 'sudo id'`
-# (2026-10-28). That env must itself sit in command position, so `git commit -m 'env -S sudo'`
-# stays free.
+# (2026-10-28). That env must itself sit in command position, and -S counts only among its own
+# options and assignments, so `git commit -m 'env -S sudo'` and `env printf x -S sudo` stay free.
 CMD_WRAPS="((command|builtin|exec|nohup|nice|time|xargs|env|doas)(([[:space:]]+-[^[:space:]]+)([[:space:]]+[^-[:space:]][^[:space:]]*)?)*[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*"
-ENV_SPLIT_POS="(^|[;&|()\`{!]|(-[a-zA-Z]*c|eval)[[:space:]]+[\"'])[[:space:]]*((command|builtin|exec|nohup|nice|time|doas)[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|()]*/)?env([[:space:]]+[^[:space:];&|]+)*[[:space:]]+(-[a-zA-Z]*S|--split-string)(=|[[:space:]]*)[\"']?"
+ENV_SPLIT_POS="(^|[;&|()\`{!]|(-[a-zA-Z]*c|eval)[[:space:]]+[\"'])[[:space:]]*((command|builtin|exec|nohup|nice|time|doas)[[:space:]]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:]]*[[:space:]]+)*([^[:space:];&|()]*/)?env([[:space:]]+(-[uPC][[:space:]]+[^-[:space:];&|][^[:space:];&|]*|-[^-[:space:];&|][^[:space:];&|]*|--[^[:space:];&|]+|[A-Za-z_][A-Za-z0-9_]*=[^[:space:];&|]*))*[[:space:]]+(-[a-zA-Z]*S|--split-string)(=|[[:space:]]*)[\"']?"
 CMD_POS="(^|[;&|()\`{!]|(-[a-zA-Z]*c|eval)[[:space:]]+[\"']|${ENV_SPLIT_POS}|(^|[;&|()\`{])[[:space:]]*(then|else|do|elif|if|while|until))[[:space:]]*"
 SHELL_WORDS="(bash|sh|zsh|fish|dash|ksh)"
 
@@ -352,37 +352,56 @@ function msgfile(w, ci, n, subre, flagre,   i, sub1, fl) {
   }
   return (sub1 ~ subre && fl)
 }
-BEGIN { RS = "\001"; sq = "\047"; bt = "\140" }
+BEGIN { RS = "\001"; sq = "\047"; dq = "\042"; bt = "\140" }
 {
-  s = $0; n = split(s, L, "\n"); out = ""; ok = 1; qh = 1; nq = 0
-  for (i = 1; i <= n; i++) {
-    line = L[i]
+  s = $0; n = split(s, L, "\n"); out = ""; ok = 1; qh = 1; nq = 0; st = ""; sp = 0
+  for (li = 1; li <= n; li++) {
+    line = L[li]
     if (qh <= nq) {
       t = line; if (QT[qh]) sub(/^\t+/, "", t)
       if (t == QD[qh]) { qh++; if (qh > nq) { qh = 1; nq = 0 } }
       else if (!QQ[qh] && (index(line, "$(") > 0 || index(line, bt) > 0)) ok = 0
-      out = out (i > 1 ? "\n" : "")
+      out = out (li > 1 ? "\n" : "")
       continue
     }
-    rest = line; done = ""
-    while (match(rest, /<<-?[ \t]*(\\?[A-Za-z0-9_.-]+|\047[^\047]+\047|"[^"]+")/)) {
-      before = done substr(rest, 1, RSTART - 1)
-      if (RSTART > 1 && substr(rest, RSTART - 1, 1) == "<") ok = 0
-      tok = substr(rest, RSTART, RLENGTH)
-      d = substr(tok, 3); dash = (substr(d, 1, 1) == "-"); if (dash) d = substr(d, 2)
-      sub(/^[ \t]+/, "", d)
-      q = (substr(d, 1, 1) == sq || substr(d, 1, 1) == "\"" || substr(d, 1, 1) == "\\")
-      gsub(/[\047"\\]/, "", d)
-      if (!sink(before)) ok = 0
-      nq++; QD[nq] = d; QT[nq] = dash; QQ[nq] = q
-      done = before; rest = substr(rest, RSTART + RLENGTH)
+    # one scan across lines keeps quote and $( state, so an operator inside a string, a
+    # comment or a continued line is never read as one; escapes, ANSI-C quotes and backticks decline
+    o = ""; seg = ""; m = length(line)
+    for (i = 1; i <= m; i++) {
+      c = substr(line, i, 1)
+      if (st == sq) { if (c == sq) st = ""; o = o c; seg = seg c; continue }
+      if (c == "\\" || c == bt) { ok = 0; o = o c; seg = seg c; continue }
+      if (c == "$" && substr(line, i + 1, 1) == "(") { STK[++sp] = st; st = ""; o = o "$("; seg = ""; i++; continue }
+      if (st == dq) { if (c == dq) st = ""; o = o c; seg = seg c; continue }
+      if (c == sq) { if (i > 1 && substr(line, i - 1, 1) == "$") ok = 0; st = sq }
+      else if (c == dq) st = dq
+      else if (c == "#") ok = 0
+      else if (c == ")" && sp > 0) { st = STK[sp--]; o = o c; seg = ""; continue }
+      else if (c == "<" && substr(line, i + 1, 1) == "<") {
+        r = substr(line, i)
+        if (substr(r, 3, 1) == "<" || !match(r, /^<<-?[ \t]*(\\?[A-Za-z0-9_.-]+|\047[^\047]+\047|"[^"]+")/)) { ok = 0; o = o c; continue }
+        nx = substr(r, RLENGTH + 1, 1)
+        if (nx != "" && nx !~ /[ \t;&|)<>]/) ok = 0
+        d = substr(r, 3, RLENGTH - 2); dash = (substr(d, 1, 1) == "-"); if (dash) d = substr(d, 2)
+        sub(/^[ \t]+/, "", d)
+        q = (substr(d, 1, 1) == sq || substr(d, 1, 1) == dq || substr(d, 1, 1) == "\\")
+        gsub(/[\047"\\]/, "", d)
+        if (!sink(seg)) ok = 0
+        nq++; QD[nq] = d; QT[nq] = dash; QQ[nq] = q
+        i += RLENGTH - 1
+        continue
+      }
+      else if (index(";&|(", c) > 0) { o = o c; seg = ""; continue }
+      o = o c; seg = seg c
     }
-    if (index(rest, "<<") > 0) ok = 0
-    out = out (i > 1 ? "\n" : "") done rest
+    if (line ~ /\\$/) ok = 0
+    out = out (li > 1 ? "\n" : "") o
   }
-  if (nq > 0) ok = 0
+  if (nq > 0 || st != "" || sp > 0) ok = 0
   if (out ~ /(^|[^[:alnum:]_.-])(bash|sh|zsh|dash|ksh|fish|source|eval|exec|xargs|ssh|su|watch|parallel|osascript|python[0-9.]*|node|perl|ruby|deno|bun|php)([^[:alnum:]_.-]|$)/) ok = 0
-  if (out ~ /(^|[;&|(`{!\n])[ \t]*([A-Za-z_][A-Za-z0-9_]*=[^ \t]*[ \t]+)*([.~]|[^ \t;&|()]*\/)/) ok = 0
+  # what is left runs a path-named program, a $-expanded command word or the output of a substitution
+  if (out ~ /(^|[;&|(`{!\n])[ \t]*(([A-Za-z_][A-Za-z0-9_]*=[^ \t]*|command|builtin|nohup|time|noglob|then|do|else)[ \t]+)*["\047]?([.~$]|[^ \t;&|()"\047]*\/)/) ok = 0
+  if (out ~ /[A-Za-z_][A-Za-z0-9_]*=["\047]?\$\(/) ok = 0
   printf "%s", (ok ? out : s)
 }'
 mask_cmd() {  # mask_cmd <command>: the masked copy, or the command itself when nothing applies
