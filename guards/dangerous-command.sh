@@ -205,12 +205,15 @@ function wbase(x,   n, a) { n = split(x, a, "/"); return tolower(a[n]) }
 function isexec(b) {
   return (b ~ /^(eval|source|xargs|exec|sh|bash|zsh|dash|ksh|fish|ssh|su|watch|parallel|osascript|function|alias|trap)$/ || b == "." || b ~ /^-S/ || b == "--split-string")
 }
-function cmdidx(   i, x) {
+function cmdidx(   i, x, envw) {
   for (i = 1; i <= nw; i++) {
     x = wd[i]
     if (x ~ /^[A-Za-z_][A-Za-z0-9_]*=/) continue
     x = wbase(x)
     if (x ~ /^(command|builtin|nohup|time|noglob|then|else|do|elif|if|while|until|[{]|!)$/) continue
+    # env and its flags sit in front of the real command (`env LC_ALL=C printf …`); -S is risky above
+    if (x == "env") { envw = 1; continue }
+    if (envw && x ~ /^-/) continue
     return i
   }
   return 0
@@ -360,7 +363,7 @@ BEGIN { RS = "\001"; sq = "\047"; dq = "\042"; bt = "\140" }
     if (qh <= nq) {
       t = line; if (QT[qh]) sub(/^\t+/, "", t)
       if (t == QD[qh]) { qh++; if (qh > nq) { qh = 1; nq = 0 } }
-      else if (!QQ[qh] && (index(line, "$(") > 0 || index(line, bt) > 0)) ok = 0
+      else if (!QQ[qh] && (index(line, "$(") > 0 || index(line, bt) > 0 || index(line, "\\") > 0)) ok = 0
       out = out (li > 1 ? "\n" : "")
       continue
     }
@@ -371,7 +374,8 @@ BEGIN { RS = "\001"; sq = "\047"; dq = "\042"; bt = "\140" }
       c = substr(line, i, 1)
       if (st == sq) { if (c == sq) st = ""; o = o c; seg = seg c; continue }
       if (c == "\\" || c == bt) { ok = 0; o = o c; seg = seg c; continue }
-      if (c == "$" && substr(line, i + 1, 1) == "(") { STK[++sp] = st; st = ""; o = o "$("; seg = ""; i++; continue }
+      if (c == "(" && substr(line, i + 1, 1) == "(") ok = 0
+      if (c == "$" && substr(line, i + 1, 1) == "(") { if (substr(line, i + 2, 1) == "(") ok = 0; STK[++sp] = st; st = ""; o = o "$("; seg = ""; i++; continue }
       if (st == dq) { if (c == dq) st = ""; o = o c; seg = seg c; continue }
       if (c == sq) { if (i > 1 && substr(line, i - 1, 1) == "$") ok = 0; st = sq }
       else if (c == dq) st = dq
@@ -379,7 +383,7 @@ BEGIN { RS = "\001"; sq = "\047"; dq = "\042"; bt = "\140" }
       else if (c == ")" && sp > 0) { st = STK[sp--]; o = o c; seg = ""; continue }
       else if (c == "<" && substr(line, i + 1, 1) == "<") {
         r = substr(line, i)
-        if (substr(r, 3, 1) == "<" || !match(r, /^<<-?[ \t]*(\\?[A-Za-z0-9_.-]+|\047[^\047]+\047|"[^"]+")/)) { ok = 0; o = o c; continue }
+        if (substr(r, 3, 1) == "<" || !match(r, /^<<-?[ \t]*(\\?[A-Za-z0-9_.-]+|\047[A-Za-z0-9_.-]+\047|"[A-Za-z0-9_.-]+")/)) { ok = 0; o = o c; continue }
         nx = substr(r, RLENGTH + 1, 1)
         if (nx != "" && nx !~ /[ \t;&|)<>]/) ok = 0
         d = substr(r, 3, RLENGTH - 2); dash = (substr(d, 1, 1) == "-"); if (dash) d = substr(d, 2)
