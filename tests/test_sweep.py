@@ -32,7 +32,7 @@ def test_time_parsing():
 
 
 def test_auto_rules():
-    """Only an orphaned Claude shell is stopped unasked; runaway and stale orphans go to review
+    """Nothing is stopped unasked: runaway, stale and orphaned-shell candidates all go to review
     (a nohup job also has parent pid 1)."""
     w = sw.WINDOW_S
     table = {
@@ -43,8 +43,8 @@ def test_auto_rules():
         15: proc(1, 30 * 60, 0, "/bin/zsh -c source /u/.claude/shell-snapshots/t.sh && y"),  # young shell
     }
     auto, review, watch = run(table, {10: w * 0.95})
-    assert auto == {13: "orphaned shell"}
-    assert review == {10, 11}
+    assert auto == {}
+    assert review == {10, 11, 13}
     assert watch == {}
 
 
@@ -60,6 +60,17 @@ def test_protected_descendant_protects_the_tree():
     assert auto == {} and review == set()
     assert "below it" in sw.protected_reason(table, 60, set(), set())
     assert sw.stop_tree(table, 60, "id60", set(), set()).startswith("refused")
+
+
+def test_unreadable_identity_is_refused():
+    table = {70: proc(1, 3 * H, 0, "node /x/a.js")}
+    real = sw.mg.identity
+    sw.mg.identity = lambda pid: None
+    try:
+        assert sw.stop_tree(table, 70, None, set(), set()).startswith("refused")
+        assert sw.stop_tree(table, 70, "None", set(), set()).startswith("refused")
+    finally:
+        sw.mg.identity = real
 
 
 def test_launchd_listing_failure_is_unknown():

@@ -15,17 +15,15 @@ Protected, never signalled (is_protected):
   EGO Lite is an app, so it is always protected. Orphaned headless browsers are the
   headless-reaper's job, not this one.
 
-Stopped without asking (auto): only an orphaned Claude Code shell-snapshot shell (its
-parent, the Claude tool call, is gone: positive evidence of abandonment) older than
-SHELL_AGE_S, whose parent is launchd (pid 1) but which is not a launchd job and not protected.
-A parent of pid 1 alone does not prove abandonment (`nohup python3 train.py` looks the same),
-so every other orphan goes to review. A stop takes the process with its descendants through
+Nothing is stopped without the agent deciding. A parent of pid 1 does not prove
+abandonment (`nohup python3 train.py` looks the same, and so does a background job in an
+orphaned Claude shell), so every candidate goes to review. A stop takes the process with its descendants through
 memguard.stop_all (SIGSTOP, SIGTERM, SIGKILL after GRACE_S). Each identity is read once and
 bound to the sampled command line; a pid whose identity changes is never signalled. A tree
 with any protected member is refused whole.
 
 Review (the agent decides, through `sweep.py stop`): unprotected orphaned dev-tool processes
-older than an hour (runaway, stale or otherwise), and any unprotected process over
+older than an hour (noted runaway, stale or orphaned Claude shell), and any unprotected process over
 RUNAWAY_CPU % or over BIG_GB of memory. Watch (report only): protected processes over those
 limits.
 
@@ -55,7 +53,6 @@ WINDOW_S = float(os.environ.get("ZS_SWEEP_WINDOW_S", "10"))
 RUNAWAY_CPU = 80.0
 RUNAWAY_AGE_S = 30 * 60
 STALE_AGE_S = 6 * 3600  # review note only
-SHELL_AGE_S = 2 * 3600
 REVIEW_AGE_S = 3600
 BIG_GB = 4.0
 GRACE_S = 5.0
@@ -206,12 +203,11 @@ def classify(before, after, jobs, me_chain):
             if hot or big:
                 watch.append(dict(item, protected=why))
             continue
-        if orphan and SNAPSHOT_SHELL.match(v["cmd"]) and v["age"] >= SHELL_AGE_S:
-            auto.append(dict(item, rule="orphaned shell"))
-        elif (orphan and dev and v["age"] >= REVIEW_AGE_S) or hot or big:
+        if (orphan and dev and v["age"] >= REVIEW_AGE_S) or hot or big:
             ident = bound_identity(pid, v["cmd"])
             if ident is not None:
-                note = "runaway" if hot else "stale" if orphan and cpu < 1 and v["age"] >= STALE_AGE_S else ""
+                note = ("runaway" if hot else "orphaned Claude shell" if SNAPSHOT_SHELL.match(v["cmd"])
+                        else "stale" if orphan and cpu < 1 and v["age"] >= STALE_AGE_S else "")
                 review.append(dict(item, ident=str(ident), orphan=orphan, note=note))
     return auto, review, watch
 
@@ -249,8 +245,9 @@ def bound_identity(pid, cmd):
 def stop_tree(procs, root, root_ident, jobs, me_chain):
     """Stop root and its descendants. root_ident is the identity sampled earlier; a changed root is refused,
     and the whole tree is refused when any member is protected. Returns a result dict or a refusal string."""
-    if str(mg.identity(root)) != str(root_ident):
-        return "refused: pid changed"
+    current = mg.identity(root)
+    if root_ident in (None, "None", "") or current is None or str(current) != str(root_ident):
+        return "refused: pid changed or identity unreadable"
     why = protected_reason(procs, root, jobs, me_chain)
     if why:
         return "refused: " + why
@@ -259,8 +256,8 @@ def stop_tree(procs, root, root_ident, jobs, me_chain):
         ident = bound_identity(p, procs[p]["cmd"])
         if ident is not None:
             targets[p] = ident
-    if str(targets[root]) != str(root_ident):
-        return "refused: pid changed"
+    if targets[root] is None or str(targets[root]) != str(root_ident):
+        return "refused: pid changed or identity unreadable"
     return mg.stop_all(targets, GRACE_S)
 
 
