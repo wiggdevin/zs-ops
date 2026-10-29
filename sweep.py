@@ -69,6 +69,10 @@ PROTECTED_ARG = re.compile(r"(/|\b)(claude|codex|hermes|agy|t3code|zsvault)(\.m?
 DEV_FAMILY = re.compile(
     r"^(node[\d.]*|bun|deno|python[\d.]*|uv|uvx|npx|npm|pnpm|yarn|tsx|esbuild|vite|next-server|turbo|"
     r"vitest|jest|playwright|ruby|go|cargo|zsh|bash|sh)$")
+# Known leak (zs-memory, 2026-10-28): `hermes acp` does not exit when its ACP client closes; 72
+# piled up in one day holding ~3.7 GB. An orphaned one (parent pid 1) and its children lose the
+# agent-tool protection and go to review.
+HERMES_ACP = re.compile(r"hermes\S*\s+(\S+\s+)*acp(\s|$)")
 SNAPSHOT_SHELL = re.compile(r"^/bin/(zsh|bash) -c source \S*/\.claude/shell-snapshots/")
 BLOAT_DIRS = ["~/Library/Caches", "~/.npm", "~/Library/pnpm", "~/.cache", "~/Library/Logs", "~/.hermes/logs",
               "~/.claude/projects", "~/Library/Group Containers/HUAQ24HBR6.dev.orbstack", "/private/tmp"]
@@ -133,8 +137,8 @@ def chain(procs, pid):
     return mg.ancestors({p: (v["ppid"], v["cmd"]) for p, v in procs.items()}, pid)
 
 
-def own_protection(v, pid, jobs):
-    """Why this one process is protected by itself, or None."""
+def own_protection(v, pid, jobs, leaked_acp=False):
+    """Why this one process is protected by itself, or None. leaked_acp: inside an orphaned `hermes acp` tree."""
     if jobs is None and v["ppid"] == 1:
         return "launchd list unreadable"
     if jobs is not None and pid in jobs:
@@ -143,23 +147,33 @@ def own_protection(v, pid, jobs):
         return "has terminal"
     if SYSTEM_PATH.match(v["cmd"]):
         return "app or system binary"
-    if PROTECTED_NAME.search(exe_name(v["cmd"])) or PROTECTED_ARG.search(v["cmd"]):
+    if not leaked_acp and (PROTECTED_NAME.search(exe_name(v["cmd"])) or PROTECTED_ARG.search(v["cmd"])):
         return "agent tool"
+    return None
+
+
+def leaked_acp_root(procs, pid):
+    """The orphaned `hermes acp` process at or above pid, or None."""
+    for p in chain(procs, pid):
+        v = procs[p]
+        if v["ppid"] == 1 and HERMES_ACP.search(v["cmd"]):
+            return p
     return None
 
 
 def protected_reason(procs, pid, jobs, me_chain):
     """Why pid is protected: itself, an ancestor, or any descendant (a stop takes the whole tree)."""
+    leak = leaked_acp_root(procs, pid) is not None
     for p in tree_of(procs, pid):
         if p in me_chain:
             return "self" if p == pid else "has this sweep below it"
-        why = own_protection(procs[p], p, jobs)
+        why = own_protection(procs[p], p, jobs, leak)
         if why and p != pid:
             return "%s %d below it" % (why, p)
         if why:
             return why
     for p in chain(procs, pid)[1:]:
-        why = own_protection(procs[p], p, jobs)
+        why = own_protection(procs[p], p, jobs, leak)
         if why:
             return "below %s %d" % (why, p)
     return None
@@ -206,7 +220,8 @@ def classify(before, after, jobs, me_chain):
         if (orphan and dev and v["age"] >= REVIEW_AGE_S) or hot or big:
             ident = bound_identity(pid, v["cmd"])
             if ident is not None:
-                note = ("runaway" if hot else "orphaned Claude shell" if SNAPSHOT_SHELL.match(v["cmd"])
+                note = ("orphaned hermes acp (known leak)" if HERMES_ACP.search(v["cmd"]) and orphan
+                        else "runaway" if hot else "orphaned Claude shell" if SNAPSHOT_SHELL.match(v["cmd"])
                         else "stale" if orphan and cpu < 1 and v["age"] >= STALE_AGE_S else "")
                 review.append(dict(item, ident=str(ident), orphan=orphan, note=note))
     return auto, review, watch

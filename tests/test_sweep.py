@@ -73,6 +73,19 @@ def test_unreadable_identity_is_refused():
         sw.mg.identity = real
 
 
+def test_orphaned_hermes_acp_goes_to_review():
+    acp = "/Users/u/.hermes/tools/python3/bin/python3 /Users/u/projects/services/hermes-official/hermes acp --accept-hooks"
+    table = {
+        80: proc(1, 3 * H, 0, acp),                                                  # leaked: review
+        81: proc(80, 3 * H, 0, "/Users/u/.hermes/tools/node/bin/node /x/mcp.js"),   # its child, not a blocker
+        90: proc(91, 3 * H, 0, acp),                                                 # live client: protected
+        91: proc(1, 3 * H, 0, "/Applications/Zed.app/Contents/MacOS/zed"),
+    }
+    auto, review, watch = run(table, {})
+    assert review == {80}, review
+    assert sw.protected_reason(table, 90, set(), set())
+
+
 def test_launchd_listing_failure_is_unknown():
     class R:
         returncode, stdout = 1, ""
