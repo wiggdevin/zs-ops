@@ -213,6 +213,8 @@ function cmdidx(   i, x, envw) {
     if (x ~ /^(command|builtin|nohup|time|noglob|then|else|do|elif|if|while|until|[{]|!)$/) continue
     # env and its flags sit in front of the real command (`env LC_ALL=C printf …`); -S is risky above
     if (x == "env") { envw = 1; continue }
+    if (envw && wd[i] ~ /^(-[A-Za-z]*S|--split-string)/) risky = 1
+    if (envw && wd[i] ~ /^-[A-Za-z]*[uPC]$/) { i++; continue }
     if (envw && x ~ /^-/) continue
     return i
   }
@@ -375,6 +377,7 @@ BEGIN { RS = "\001"; sq = "\047"; dq = "\042"; bt = "\140" }
       if (st == sq) { if (c == sq) st = ""; o = o c; seg = seg c; continue }
       if (c == "\\" || c == bt) { ok = 0; o = o c; seg = seg c; continue }
       if (c == "(" && substr(line, i + 1, 1) == "(") ok = 0
+      if (c == "$" && substr(line, i + 1, 1) == "{") ok = 0
       if (c == "$" && substr(line, i + 1, 1) == "(") { if (substr(line, i + 2, 1) == "(") ok = 0; STK[++sp] = st; st = ""; o = o "$("; seg = ""; i++; continue }
       if (st == dq) { if (c == dq) st = ""; o = o c; seg = seg c; continue }
       if (c == sq) { if (i > 1 && substr(line, i - 1, 1) == "$") ok = 0; st = sq }
@@ -399,6 +402,8 @@ BEGIN { RS = "\001"; sq = "\047"; dq = "\042"; bt = "\140" }
       o = o c; seg = seg c
     }
     if (line ~ /\\$/) ok = 0
+    # a body starts on the next line, so the operator line must not end inside a quote
+    if (qh <= nq && st != "") ok = 0
     out = out (li > 1 ? "\n" : "") o
   }
   if (nq > 0 || st != "" || sp > 0) ok = 0
