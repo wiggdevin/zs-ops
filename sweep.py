@@ -15,17 +15,19 @@ Protected, never signalled (is_protected):
   EGO Lite is an app, so it is always protected. Orphaned headless browsers are the
   headless-reaper's job, not this one.
 
-Stopped without asking (auto), only when ALL hold: the parent is launchd (pid 1) but it is
-not a launchd job, it is not protected, it is a dev-tool process (DEV_FAMILY), and either
-  runaway  CPU at or above RUNAWAY_CPU % over the sample window and older than RUNAWAY_AGE_S, or
-  stale    older than STALE_AGE_S, under 1 % CPU, and lsof shows no socket at all, or
-  shell    an orphaned Claude Code shell-snapshot shell older than SHELL_AGE_S.
-Each one is stopped with its descendants through memguard.stop_all (SIGSTOP, SIGTERM,
-SIGKILL after GRACE_S; the start time is re-read before each signal).
+Stopped without asking (auto): only an orphaned Claude Code shell-snapshot shell (its
+parent, the Claude tool call, is gone: positive evidence of abandonment) older than
+SHELL_AGE_S, whose parent is launchd (pid 1) but which is not a launchd job and not protected.
+A parent of pid 1 alone does not prove abandonment (`nohup python3 train.py` looks the same),
+so every other orphan goes to review. A stop takes the process with its descendants through
+memguard.stop_all (SIGSTOP, SIGTERM, SIGKILL after GRACE_S). Each identity is read once and
+bound to the sampled command line; a pid whose identity changes is never signalled. A tree
+with any protected member is refused whole.
 
-Review (the agent decides, through `sweep.py stop`): any other unprotected orphaned dev-tool
-process older than an hour, and any unprotected process over RUNAWAY_CPU % or over
-BIG_GB of memory. Watch (report only): protected processes over those limits.
+Review (the agent decides, through `sweep.py stop`): unprotected orphaned dev-tool processes
+older than an hour (runaway, stale or otherwise), and any unprotected process over
+RUNAWAY_CPU % or over BIG_GB of memory. Watch (report only): protected processes over those
+limits.
 
 Disk bloat is reported, never deleted.
 
@@ -52,7 +54,7 @@ LOG_CAP_BYTES = 2 * 1024 * 1024
 WINDOW_S = float(os.environ.get("ZS_SWEEP_WINDOW_S", "10"))
 RUNAWAY_CPU = 80.0
 RUNAWAY_AGE_S = 30 * 60
-STALE_AGE_S = 6 * 3600
+STALE_AGE_S = 6 * 3600  # review note only
 SHELL_AGE_S = 2 * 3600
 REVIEW_AGE_S = 3600
 BIG_GB = 4.0
@@ -117,11 +119,16 @@ def read_table():
 
 
 def launchd_pids():
+    """Pids of running launchd jobs, or None when the listing failed (callers then protect every orphan)."""
     try:
-        out = subprocess.run(["/bin/launchctl", "list"], capture_output=True, text=True, timeout=15).stdout
+        r = subprocess.run(["/bin/launchctl", "list"], capture_output=True, text=True, timeout=15)
     except (subprocess.SubprocessError, OSError):
-        return None  # unknown: the caller treats every pid-1 child as a launchd job
-    return {int(l.split()[0]) for l in out.splitlines()[1:] if l.split() and l.split()[0].isdigit()}
+        return None
+    lines = r.stdout.splitlines()
+    if r.returncode != 0 or not lines or not lines[0].startswith("PID"):
+        return None
+    pids = {int(l.split()[0]) for l in lines[1:] if l.split() and l.split()[0].isdigit()}
+    return pids or None
 
 
 def chain(procs, pid):
@@ -129,21 +136,35 @@ def chain(procs, pid):
     return mg.ancestors({p: (v["ppid"], v["cmd"]) for p, v in procs.items()}, pid)
 
 
+def own_protection(v, pid, jobs):
+    """Why this one process is protected by itself, or None."""
+    if jobs is None and v["ppid"] == 1:
+        return "launchd list unreadable"
+    if jobs is not None and pid in jobs:
+        return "launchd job"
+    if v["tty"] not in ("??", "-", ""):
+        return "has terminal"
+    if SYSTEM_PATH.match(v["cmd"]):
+        return "app or system binary"
+    if PROTECTED_NAME.search(exe_name(v["cmd"])) or PROTECTED_ARG.search(v["cmd"]):
+        return "agent tool"
+    return None
+
+
 def protected_reason(procs, pid, jobs, me_chain):
-    if pid in me_chain:
-        return "self"
-    for p in chain(procs, pid):
-        v = procs[p]
-        if jobs is None and v["ppid"] == 1:
-            return "launchd list unreadable"
-        if jobs is not None and p in jobs:
-            return "launchd job" if p == pid else "below launchd job %d" % p
-        if v["tty"] not in ("??", "-", ""):
-            return "has terminal" if p == pid else "below terminal session %d" % p
-        if SYSTEM_PATH.match(v["cmd"]):
-            return "app or system binary" if p == pid else "below app %d" % p
-        if PROTECTED_NAME.search(exe_name(v["cmd"])) or PROTECTED_ARG.search(v["cmd"]):
-            return "agent tool" if p == pid else "below agent tool %d" % p
+    """Why pid is protected: itself, an ancestor, or any descendant (a stop takes the whole tree)."""
+    for p in tree_of(procs, pid):
+        if p in me_chain:
+            return "self" if p == pid else "has this sweep below it"
+        why = own_protection(procs[p], p, jobs)
+        if why and p != pid:
+            return "%s %d below it" % (why, p)
+        if why:
+            return why
+    for p in chain(procs, pid)[1:]:
+        why = own_protection(procs[p], p, jobs)
+        if why:
+            return "below %s %d" % (why, p)
     return None
 
 
@@ -158,18 +179,6 @@ def tree_of(procs, root):
             out.append(p)
             todo.extend(children.get(p, []))
     return out
-
-
-def has_sockets(pid):
-    """True when lsof shows any internet socket, or cannot tell (so never stale-stopped)."""
-    try:
-        r = subprocess.run(["/usr/sbin/lsof", "-nP", "-a", "-p", str(pid), "-i"],
-                           capture_output=True, text=True, timeout=15)
-    except (subprocess.SubprocessError, OSError):
-        return True
-    if r.returncode not in (0, 1):
-        return True
-    return len(r.stdout.strip().splitlines()) > 1
 
 
 def footprint_gb(pid):
@@ -197,20 +206,13 @@ def classify(before, after, jobs, me_chain):
             if hot or big:
                 watch.append(dict(item, protected=why))
             continue
-        rule = None
-        if orphan and dev:
-            if hot:
-                rule = "runaway orphan"
-            elif SNAPSHOT_SHELL.match(v["cmd"]) and v["age"] >= SHELL_AGE_S:
-                rule = "orphaned shell"
-            elif v["age"] >= STALE_AGE_S and cpu < 1 and not has_sockets(pid):
-                rule = "stale orphan"
-        if rule:
-            auto.append(dict(item, rule=rule))
+        if orphan and SNAPSHOT_SHELL.match(v["cmd"]) and v["age"] >= SHELL_AGE_S:
+            auto.append(dict(item, rule="orphaned shell"))
         elif (orphan and dev and v["age"] >= REVIEW_AGE_S) or hot or big:
-            ident = mg.identity(pid)
+            ident = bound_identity(pid, v["cmd"])
             if ident is not None:
-                review.append(dict(item, ident=str(ident), orphan=orphan))
+                note = "runaway" if hot else "stale" if orphan and cpu < 1 and v["age"] >= STALE_AGE_S else ""
+                review.append(dict(item, ident=str(ident), orphan=orphan, note=note))
     return auto, review, watch
 
 
@@ -231,25 +233,51 @@ def bloat():
     return out
 
 
-def stop_tree(procs, root):
-    targets = {}
-    for p in tree_of(procs, root):
-        ident = mg.identity(p)
+def bound_identity(pid, cmd):
+    """pid's identity token, only if pid still runs the sampled command line (so a reused pid is never taken)."""
+    ident = mg.identity(pid)
+    if ident is None:
+        return None
+    try:
+        now = subprocess.run(["/bin/ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True,
+                             timeout=5).stdout.rstrip("\n")
+    except (subprocess.SubprocessError, OSError):
+        return None
+    return ident if now == cmd and mg.identity(pid) == ident else None
+
+
+def stop_tree(procs, root, root_ident, jobs, me_chain):
+    """Stop root and its descendants. root_ident is the identity sampled earlier; a changed root is refused,
+    and the whole tree is refused when any member is protected. Returns a result dict or a refusal string."""
+    if str(mg.identity(root)) != str(root_ident):
+        return "refused: pid changed"
+    why = protected_reason(procs, root, jobs, me_chain)
+    if why:
+        return "refused: " + why
+    targets = {root: mg.identity(root)}
+    for p in tree_of(procs, root)[1:]:
+        ident = bound_identity(p, procs[p]["cmd"])
         if ident is not None:
             targets[p] = ident
-    return mg.stop_all(targets, GRACE_S) if targets else {}
+    if str(targets[root]) != str(root_ident):
+        return "refused: pid changed"
+    return mg.stop_all(targets, GRACE_S)
 
 
 def log(rec):
+    """Best effort: a full disk must not cost the report."""
     rec = dict(rec, ts=time.strftime("%Y-%m-%dT%H:%M:%S%z"))
-    LOG.parent.mkdir(parents=True, exist_ok=True)
-    with LOG.open("a") as fh:
-        fh.write(json.dumps(rec) + "\n")
-    if LOG.stat().st_size > LOG_CAP_BYTES:
-        lines = LOG.read_text().splitlines(keepends=True)
-        tmp = LOG.with_name(LOG.name + ".tmp")
-        tmp.write_text("".join(lines[len(lines) // 2:]))
-        os.replace(tmp, LOG)
+    try:
+        LOG.parent.mkdir(parents=True, exist_ok=True)
+        with LOG.open("a") as fh:
+            fh.write(json.dumps(rec) + "\n")
+        if LOG.stat().st_size > LOG_CAP_BYTES:
+            lines = LOG.read_text().splitlines(keepends=True)
+            tmp = LOG.with_name(LOG.name + ".tmp")
+            tmp.write_text("".join(lines[len(lines) // 2:]))
+            os.replace(tmp, LOG)
+    except OSError as e:
+        print("(log write failed: %s)" % e.strerror, file=sys.stderr)
 
 
 def fmt(item, extra):
@@ -266,7 +294,9 @@ def report(dry_run):
     jobs = launchd_pids()
     auto, review, watch = classify(before, after, jobs, me_chain)
     for item in auto:
-        item["result"] = stop_tree(after, item["pid"]) if signals else "dry run"
+        ident = bound_identity(item["pid"], after[item["pid"]]["cmd"])
+        item["result"] = ("refused: pid changed" if ident is None else
+                          stop_tree(after, item["pid"], ident, jobs, me_chain)) if signals else "dry run"
         log({"action": "auto-stop", **{k: v for k, v in item.items()}})
     b = bloat()
     comp = mg.compressor_bytes()
@@ -279,7 +309,8 @@ def report(dry_run):
     lines += [fmt(i, "%s -> %s" % (i["rule"], i["result"] if isinstance(i["result"], str)
                                    else ",".join(sorted(set(i["result"].values()))))) for i in auto] or ["- none"]
     lines += ["", "## review: you may stop these with `sweep.py stop PID IDENT` (%d)" % len(review)]
-    lines += [fmt(i, "IDENT %s · %s" % (i["ident"], "orphan" if i["orphan"] else "has live parent"))
+    lines += [fmt(i, "IDENT %s · %s%s" % (i["ident"], "orphan" if i["orphan"] else "has live parent",
+                                          " · " + i["note"] if i["note"] else ""))
               for i in review] or ["- none"]
     lines += ["", "## watch: protected, report only (%d)" % len(watch)]
     lines += [fmt(i, i["protected"]) for i in watch] or ["- none"]
@@ -302,12 +333,11 @@ def stop(pid, ident):
     if pid not in procs or str(mg.identity(pid)) != ident:
         print("refused: pid %d is gone or is now a different process" % pid)
         return 2
-    why = protected_reason(procs, pid, launchd_pids(), me_chain)
-    if why:
-        log({"action": "stop-refused", "pid": pid, "reason": why, "cmd": procs[pid]["cmd"][:160]})
-        print("refused: pid %d is protected (%s)" % (pid, why))
+    result = stop_tree(procs, pid, ident, launchd_pids(), me_chain)
+    if isinstance(result, str):
+        log({"action": "stop-refused", "pid": pid, "reason": result, "cmd": procs[pid]["cmd"][:160]})
+        print("%s (pid %d)" % (result, pid))
         return 2
-    result = stop_tree(procs, pid)
     log({"action": "stop", "pid": pid, "cmd": procs[pid]["cmd"][:160], "result": result})
     print("stopped pid %d and %d descendants: %s" % (pid, len(result) - 1, json.dumps(result)))
     return 0
@@ -319,6 +349,9 @@ def main(argv):
     if not args or args[0] == "report":
         return report(dry)
     if args[0] == "stop" and len(args) == 3:
+        if dry:
+            print("refused: --dry-run cannot be combined with stop")
+            return 2
         return stop(args[1], args[2])
     print(__doc__.split("Usage:")[1].split("Log:")[0].rstrip())
     return 2

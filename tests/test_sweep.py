@@ -10,8 +10,8 @@ H = 3600
 GB = sw.mg.GB
 sw.mg.facts = lambda pid: (FOOT.get(pid, 0), 1)
 sw.mg.identity = lambda pid: "id%d" % pid
-sw.has_sockets = lambda pid: pid in SOCKETS
-FOOT, SOCKETS = {}, set()
+sw.bound_identity = lambda pid, cmd: "id%d" % pid
+FOOT = {}
 
 
 def proc(ppid, age, cpu_s, cmd, tty="??"):
@@ -32,20 +32,45 @@ def test_time_parsing():
 
 
 def test_auto_rules():
+    """Only an orphaned Claude shell is stopped unasked; runaway and stale orphans go to review
+    (a nohup job also has parent pid 1)."""
     w = sw.WINDOW_S
     table = {
-        10: proc(1, 2 * H, 0, "node /x/server.js"),                       # runaway orphan
-        11: proc(1, 7 * H, 0, "python3 worker.py"),                       # stale orphan, no sockets
-        12: proc(1, 7 * H, 0, "node dev-server.js"),                      # stale but listening -> review
+        10: proc(1, 2 * H, 0, "node /x/server.js"),                       # runaway orphan -> review
+        11: proc(1, 7 * H, 0, "python3 train.py"),                        # stale orphan -> review
         13: proc(1, 3 * H, 0, "/bin/zsh -c source /u/.claude/shell-snapshots/s.sh && x"),  # orphaned shell
         14: proc(1, 10 * 60, 0, "node /x/young.js"),                      # young: ignored
+        15: proc(1, 30 * 60, 0, "/bin/zsh -c source /u/.claude/shell-snapshots/t.sh && y"),  # young shell
     }
-    SOCKETS.clear()
-    SOCKETS.add(12)
     auto, review, watch = run(table, {10: w * 0.95})
-    assert auto == {10: "runaway orphan", 11: "stale orphan", 13: "orphaned shell"}
-    assert review == {12}
+    assert auto == {13: "orphaned shell"}
+    assert review == {10, 11}
     assert watch == {}
+
+
+def test_protected_descendant_protects_the_tree():
+    """An orphaned wrapper whose child is a Claude session or has a terminal is never stopped."""
+    table = {
+        50: proc(1, 3 * H, 0, "/bin/zsh -c source /u/.claude/shell-snapshots/s.sh && claude"),
+        51: proc(50, 3 * H, 0, "claude --resume"),
+        60: proc(1, 3 * H, 0, "node /x/wrapper.js"),
+        61: proc(60, 3 * H, 0, "node /x/repl.js", tty="ttys004"),
+    }
+    auto, review, watch = run(table, {})
+    assert auto == {} and review == set()
+    assert "below it" in sw.protected_reason(table, 60, set(), set())
+    assert sw.stop_tree(table, 60, "id60", set(), set()).startswith("refused")
+
+
+def test_launchd_listing_failure_is_unknown():
+    class R:
+        returncode, stdout = 1, ""
+    real = sw.subprocess.run
+    sw.subprocess.run = lambda *a, **k: R()
+    try:
+        assert sw.launchd_pids() is None
+    finally:
+        sw.subprocess.run = real
 
 
 def test_protection():

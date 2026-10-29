@@ -386,7 +386,8 @@ def stop_all(targets, grace_s, refresh=None):
         if pid not in result:
             result[pid] = (send(pid, signal.SIGKILL) or "killed") if identity(pid) == targets[pid] else "terminated"
     for pid in frozen:  # a pid we froze must never stay frozen: its identity went unreadable or SIGTERM was refused
-        if result.get(pid) in ("gone", "denied"):
+        # ...but a pid now owned by another of our processes (readable, different identity) is left alone.
+        if result.get(pid) in ("gone", "denied") and identity(pid) in (None, targets[pid]):
             try:
                 os.kill(pid, signal.SIGCONT)  # harmless if the pid is gone or now belongs to another process
             except OSError:
