@@ -20,11 +20,12 @@ with tempfile.TemporaryDirectory() as td:
     m.DELETIONS = m.INBOX / "deletions"
     arch = m.INBOX / "_archive"
 
-    # Old month -> should reap. Recent month -> should stay.
+    # Old month -> should reap. Recent month (the current one) -> should stay.
+    month = time.strftime("%Y-%m")
     (arch / "2026-01" / "notes").mkdir(parents=True)
     (arch / "2026-01" / "notes" / "old.md").write_text("stale\n")
-    (arch / "2026-07" / "notes").mkdir(parents=True)
-    recent = arch / "2026-07" / "notes" / "fresh.md"
+    (arch / month / "notes").mkdir(parents=True)
+    recent = arch / month / "notes" / "fresh.md"
     recent.write_text("recent\n")
     # THE TRAP: archived this month, but content mtime is 2 years old (mv preserves it).
     ancient = time.time() - (730 * 86400)
@@ -36,9 +37,9 @@ with tempfile.TemporaryDirectory() as td:
 
     check("old month reaped", reaped == 1, f"reaped={reaped}")
     check("old month gone from _archive", not (arch / "2026-01").exists())
-    check("recent month untouched", (arch / "2026-07" / "notes" / "fresh.md").exists())
+    check("recent month untouched", (arch / month / "notes" / "fresh.md").exists())
     check("ancient mtime did NOT trigger reap",
-          (arch / "2026-07").exists(),
+          (arch / month).exists(),
           "mtime leaked into the TTL decision")
     check("malformed month folder skipped, not crashed", (arch / "not-a-month").exists())
     check("malformed logged", any("unrecognized month" in l for l in lines))
