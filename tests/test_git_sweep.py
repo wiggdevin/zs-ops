@@ -232,3 +232,16 @@ def test_remove_keeps_a_recovery_ref_and_a_branch_used_elsewhere(tmp_path):
     (tmp_path / "wt2" / "new.txt").write_text("x")
     ok, note = gs.remove_worktree(main, {"path": str(tmp_path / "wt2"), "head": head, "branch": "feat/y"}, "m")
     assert not ok and (tmp_path / "wt2" / "new.txt").exists()
+
+
+if __name__ == "__main__":
+    import inspect
+    import tempfile
+    for name, fn in sorted(globals().items()):
+        if name.startswith("test_"):
+            if "tmp_path" in inspect.signature(fn).parameters:
+                with tempfile.TemporaryDirectory() as td:
+                    fn(Path(td))
+            else:
+                fn()
+            print("ok", name)
