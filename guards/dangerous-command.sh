@@ -422,7 +422,7 @@ function onlysafe(t,   i, c, k, stk, top, n) {
   # double quotes), separators, redirections. Each command word must be a known text tool;
   # git or gh may only sit beside cat/echo/printf with no file written, since git runs hooks,
   # config and attributes a here-doc could have just written (Sol review 2026-11-02).
-  os_w = ""; os_exp = 1; os_skip = 0; os_writes = 0; os_git = 0; os_plain = 1; os_cmd = ""
+  os_w = ""; os_exp = 1; os_skip = 0; os_writes = 0; os_git = 0; os_plain = 1
   k = 0; t = t "\n"; n = length(t)
   for (i = 1; i <= n; i++) {
     c = substr(t, i, 1); top = (k ? stk[k] : "")
@@ -455,14 +455,13 @@ function osword(   b) {
   if (os_exp) {
     if (b ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || b ~ /^["\047$]+$/) return 1
     if (b ~ /^(command|builtin|nohup|time|noglob|then|do|else|elif|if|while|until|fi|done|esac)$/) return 1
-    os_exp = 0; os_cmd = b
+    os_exp = 0
     if (b ~ /^(git|gh)$/) { os_git = 1; return 1 }
     if (b !~ /^(cat|echo|printf|true|false)$/) os_plain = 0
-    return (b ~ /^(cat|tee|head|tail|wc|sort|uniq|grep|egrep|fgrep|rg|jq|cut|tr|nl|column|fold|rev|diff|cmp|pbcopy|base64|od|xxd|tac|paste|echo|printf|mkdir|ls|cd|pwd|touch|cp|mv|chmod|true|false|test|\[|sleep|date|wait|exit|return|realpath|dirname|basename|stat|file)$/)
+    # none of these has an option that runs a program (rg --pre, sort --compress-program and
+    # sed e/w do, so they are left out on purpose: a body fed to them keeps the command as typed)
+    return (b ~ /^(cat|tee|head|tail|wc|uniq|grep|egrep|fgrep|jq|cut|tr|nl|column|fold|rev|diff|cmp|pbcopy|base64|od|xxd|tac|paste|echo|printf|mkdir|ls|cd|pwd|touch|cp|mv|chmod|true|false|test|\[|sleep|date|wait|exit|return|realpath|dirname|basename|stat|file)$/)
   }
-  # arguments that make an allowlisted tool run a program
-  if (os_cmd == "rg" && b ~ /^--pre(=|$)/) return 0
-  if (os_cmd == "sort" && b ~ /^--compress-prog/) return 0
   return 1
 }'
 mask_cmd() {  # mask_cmd <command>: the masked copy, or the command itself when nothing applies
