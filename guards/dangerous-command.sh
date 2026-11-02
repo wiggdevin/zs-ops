@@ -412,48 +412,58 @@ BEGIN { RS = "\001"; sq = "\047"; dq = "\042"; bt = "\140" }
   if (out ~ /(^|[;&|(`{!\n])[ \t]*(([A-Za-z_][A-Za-z0-9_]*=[^ \t]*|command|builtin|nohup|time|noglob|then|do|else)[ \t]+)*["\047]?([.~$]|[^ \t;&|()"\047]*\/)/) ok = 0
   if (out ~ /[A-Za-z_][A-Za-z0-9_]*=["\047]?\$\(/) ok = 0
   # allowlist, not only the denylist above (2026-11-02): every command left must be a known
-  # text or git tool, so `| tcsh`, `| csh` and `make` after a written Makefile keep the command
-  # as typed (found by PR-Agent/Opus 5.5 on the PR #93 diff). Unknown words fail safe.
+  # text tool (onlysafe), so `| tcsh`, `| csh` and `make` after a written Makefile keep the
+  # command as typed (found by PR-Agent/Opus 5.5 on the PR #93 diff). Unknown words fail safe.
   if (ok && !onlysafe(out)) ok = 0
   printf "%s", (ok ? out : s)
 }
-function onlysafe(t,   ns, seg, i, n, w, j, b, c, k, top, stk, u, writes, gitlike) {
-  # separators inside quotes are text (`grep -E \047(a|b)\047`), so blank them before splitting;
-  # $( ) and backticks open a command again, even inside double quotes. Stack: s d p(aren) b(acktick)
-  u = ""; k = 0
-  for (i = 1; i <= length(t); i++) {
+function onlysafe(t,   i, c, k, stk, top, n) {
+  # Read what is left like a shell: quotes, $( ) and backticks (commands again even inside
+  # double quotes), separators, redirections. Each command word must be a known text tool;
+  # git or gh may only sit beside cat/echo/printf with no file written, since git runs hooks,
+  # config and attributes a here-doc could have just written (Sol review 2026-11-02).
+  os_w = ""; os_exp = 1; os_skip = 0; os_writes = 0; os_git = 0; os_plain = 1; os_cmd = ""
+  k = 0; t = t "\n"; n = length(t)
+  for (i = 1; i <= n; i++) {
     c = substr(t, i, 1); top = (k ? stk[k] : "")
-    if (top == "s") { if (c == "\047") k--; else if (index(";&|()`{}!<>", c) > 0) c = "_" }
-    else if (top == "d" && c == "\"") k--
-    else if (top != "s" && c == "$" && substr(t, i + 1, 1) == "(") { stk[++k] = "p"; u = u "$("; i++; continue }
-    else if (top != "s" && c == "`") { if (top == "b") k--; else stk[++k] = "b" }
-    else if (top == "d") { if (index(";&|(){}!<>", c) > 0) c = "_" }
-    else if (top == "p" && c == ")") k--
-    else if (c == "\047") stk[++k] = "s"
-    else if (c == "\"") stk[++k] = "d"
-    u = u c
+    if (top == "s") { os_w = os_w c; if (c == "\047") k--; continue }
+    if (top == "d") {
+      if (c == "\"") { os_w = os_w c; k--; continue }
+      if (c == "$" && substr(t, i + 1, 1) == "(") { if (!osword()) return 0; stk[++k] = "p"; i++; os_exp = 1; continue }
+      if (c == "`") { if (!osword()) return 0; stk[++k] = "b"; os_exp = 1; continue }
+      os_w = os_w c; continue
+    }
+    if (c == "\047") { stk[++k] = "s"; os_w = os_w c; continue }
+    if (c == "\"") { stk[++k] = "d"; os_w = os_w c; continue }
+    if (c == "$" && substr(t, i + 1, 1) == "(") { if (!osword()) return 0; stk[++k] = "p"; i++; os_exp = 1; continue }
+    if (c == "`") { if (!osword()) return 0; if (top == "b") { k--; os_exp = 0 } else { stk[++k] = "b"; os_exp = 1 }; continue }
+    if (c == ")" && top == "p") { if (!osword()) return 0; k--; os_exp = 0; continue }
+    if (c == " " || c == "\t") { if (!osword()) return 0; continue }
+    if (index(";&|(){}!\n", c) > 0) { if (!osword()) return 0; os_exp = 1; os_skip = 0; continue }
+    os_w = os_w c
   }
   if (k > 0) return 0
-  # a written file plus git or gh can run it: hooks, config and attributes are executed by git
-  # (Sol review 2026-11-02: `cat > .git/hooks/pre-commit <<EOF … EOF` then `git commit`)
-  writes = (u ~ /[>]/ || u ~ /(^|[^[:alnum:]_.-])tee([ \t]|$)/)
-  gitlike = 0
-  ns = split(u, seg, /[;&|()`{}!\n]+/)
-  for (i = 1; i <= ns; i++) {
-    n = split(seg[i], w, /[ \t]+/)
-    for (j = 1; j <= n; j++) {
-      if (w[j] == "" || w[j] ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || w[j] ~ /^["\047$]+$/) continue
-      if (w[j] ~ /^(command|builtin|nohup|time|noglob|then|do|else|elif|if|while|until|fi|done|esac)$/) continue
-      # a redirection is not the command: skip it (and a detached target) and keep looking
-      if (w[j] ~ /^[0-9]*(>>?|<|>&|&>>?)$/) { j++; continue }
-      if (w[j] ~ /^[0-9]*(>|<|&>)/) continue
-      b = w[j]
-      if (b ~ /^(git|gh)$/) gitlike = 1
-      if (b !~ /^(cat|tee|head|tail|wc|sort|uniq|grep|egrep|fgrep|rg|jq|cut|tr|nl|column|fold|rev|diff|cmp|pbcopy|base64|od|xxd|tac|paste|echo|printf|git|gh|mkdir|ls|cd|pwd|touch|cp|mv|chmod|true|false|test|\[|sleep|date|wait|exit|return|realpath|dirname|basename|stat|file)$/) return 0
-      break
-    }
+  return !(os_git && (!os_plain || os_writes))
+}
+function osword(   b) {
+  if (os_w == "") return 1
+  b = os_w; os_w = ""
+  if (os_skip) { os_skip = 0; return 1 }
+  # a redirection is not the command; a detached target is the next word
+  if (b ~ /^[0-9]*(>|>>|<|>&|&>|&>>|>\|)$/) { if (b ~ />/) os_writes = 1; os_skip = 1; return 1 }
+  if (b ~ /^[0-9]*(>|<|&>)/) { if (b ~ />/) os_writes = 1; return 1 }
+  if (os_exp) {
+    if (b ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || b ~ /^["\047$]+$/) return 1
+    if (b ~ /^(command|builtin|nohup|time|noglob|then|do|else|elif|if|while|until|fi|done|esac)$/) return 1
+    os_exp = 0; os_cmd = b
+    if (b ~ /^(git|gh)$/) { os_git = 1; return 1 }
+    if (b !~ /^(cat|echo|printf|true|false)$/) os_plain = 0
+    return (b ~ /^(cat|tee|head|tail|wc|sort|uniq|grep|egrep|fgrep|rg|jq|cut|tr|nl|column|fold|rev|diff|cmp|pbcopy|base64|od|xxd|tac|paste|echo|printf|mkdir|ls|cd|pwd|touch|cp|mv|chmod|true|false|test|\[|sleep|date|wait|exit|return|realpath|dirname|basename|stat|file)$/)
   }
-  return !(writes && gitlike)
+  # arguments that make an allowlisted tool run a program
+  if (os_cmd == "rg" && b ~ /^--pre(=|$)/) return 0
+  if (os_cmd == "sort" && b ~ /^--compress-prog/) return 0
+  return 1
 }'
 mask_cmd() {  # mask_cmd <command>: the masked copy, or the command itself when nothing applies
   local m
