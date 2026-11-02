@@ -411,7 +411,49 @@ BEGIN { RS = "\001"; sq = "\047"; dq = "\042"; bt = "\140" }
   # what is left runs a path-named program, a $-expanded command word or the output of a substitution
   if (out ~ /(^|[;&|(`{!\n])[ \t]*(([A-Za-z_][A-Za-z0-9_]*=[^ \t]*|command|builtin|nohup|time|noglob|then|do|else)[ \t]+)*["\047]?([.~$]|[^ \t;&|()"\047]*\/)/) ok = 0
   if (out ~ /[A-Za-z_][A-Za-z0-9_]*=["\047]?\$\(/) ok = 0
+  # allowlist, not only the denylist above (2026-11-02): every command left must be a known
+  # text or git tool, so `| tcsh`, `| csh` and `make` after a written Makefile keep the command
+  # as typed (found by PR-Agent/Opus 5.5 on the PR #93 diff). Unknown words fail safe.
+  if (ok && !onlysafe(out)) ok = 0
   printf "%s", (ok ? out : s)
+}
+function onlysafe(t,   ns, seg, i, n, w, j, b, c, k, top, stk, u, writes, gitlike) {
+  # separators inside quotes are text (`grep -E \047(a|b)\047`), so blank them before splitting;
+  # $( ) and backticks open a command again, even inside double quotes. Stack: s d p(aren) b(acktick)
+  u = ""; k = 0
+  for (i = 1; i <= length(t); i++) {
+    c = substr(t, i, 1); top = (k ? stk[k] : "")
+    if (top == "s") { if (c == "\047") k--; else if (index(";&|()`{}!<>", c) > 0) c = "_" }
+    else if (top == "d" && c == "\"") k--
+    else if (top != "s" && c == "$" && substr(t, i + 1, 1) == "(") { stk[++k] = "p"; u = u "$("; i++; continue }
+    else if (top != "s" && c == "`") { if (top == "b") k--; else stk[++k] = "b" }
+    else if (top == "d") { if (index(";&|(){}!<>", c) > 0) c = "_" }
+    else if (top == "p" && c == ")") k--
+    else if (c == "\047") stk[++k] = "s"
+    else if (c == "\"") stk[++k] = "d"
+    u = u c
+  }
+  if (k > 0) return 0
+  # a written file plus git or gh can run it: hooks, config and attributes are executed by git
+  # (Sol review 2026-11-02: `cat > .git/hooks/pre-commit <<EOF … EOF` then `git commit`)
+  writes = (u ~ /[>]/ || u ~ /(^|[^[:alnum:]_.-])tee([ \t]|$)/)
+  gitlike = 0
+  ns = split(u, seg, /[;&|()`{}!\n]+/)
+  for (i = 1; i <= ns; i++) {
+    n = split(seg[i], w, /[ \t]+/)
+    for (j = 1; j <= n; j++) {
+      if (w[j] == "" || w[j] ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || w[j] ~ /^["\047$]+$/) continue
+      if (w[j] ~ /^(command|builtin|nohup|time|noglob|then|do|else|elif|if|while|until|fi|done|esac)$/) continue
+      # a redirection is not the command: skip it (and a detached target) and keep looking
+      if (w[j] ~ /^[0-9]*(>>?|<|>&|&>>?)$/) { j++; continue }
+      if (w[j] ~ /^[0-9]*(>|<|&>)/) continue
+      b = w[j]
+      if (b ~ /^(git|gh)$/) gitlike = 1
+      if (b !~ /^(cat|tee|head|tail|wc|sort|uniq|grep|egrep|fgrep|rg|jq|cut|tr|nl|column|fold|rev|diff|cmp|pbcopy|base64|od|xxd|tac|paste|echo|printf|git|gh|mkdir|ls|cd|pwd|touch|cp|mv|chmod|true|false|test|\[|sleep|date|wait|exit|return|realpath|dirname|basename|stat|file)$/) return 0
+      break
+    }
+  }
+  return !(writes && gitlike)
 }'
 mask_cmd() {  # mask_cmd <command>: the masked copy, or the command itself when nothing applies
   local m
