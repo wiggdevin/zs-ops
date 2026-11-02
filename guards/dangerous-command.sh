@@ -439,7 +439,10 @@ function onlysafe(t,   i, c, k, stk, top, n) {
     if (c == "`") { if (!osword()) return 0; if (top == "b") { k--; os_exp = 0 } else { stk[++k] = "b"; os_exp = 1 }; continue }
     if (c == ")" && top == "p") { if (!osword()) return 0; k--; os_exp = 0; continue }
     if (c == " " || c == "\t") { if (!osword()) return 0; continue }
-    if (index(";&|(){}!\n", c) > 0) { if (!osword()) return 0; os_exp = 1; os_skip = 0; continue }
+    # & and | right after < or > belong to the redirection (2>&1, >|), as & before > does (&>)
+    if ((c == "&" || c == "|") && os_w ~ /[<>]$/) { os_w = os_w c; continue }
+    if (c == "&" && substr(t, i + 1, 1) == ">") { os_w = os_w c; continue }
+    if (index(";&|(){}\n", c) > 0) { if (!osword()) return 0; os_exp = 1; os_skip = 0; continue }
     os_w = os_w c
   }
   if (k > 0) return 0
@@ -454,7 +457,7 @@ function osword(   b) {
   if (b ~ /^[0-9]*(>|<|&>)/) { if (b ~ />/) os_writes = 1; return 1 }
   if (os_exp) {
     if (b ~ /^[A-Za-z_][A-Za-z0-9_]*=/ || b ~ /^["\047$]+$/) return 1
-    if (b ~ /^(command|builtin|nohup|time|noglob|then|do|else|elif|if|while|until|fi|done|esac)$/) return 1
+    if (b ~ /^(command|builtin|nohup|time|noglob|then|do|else|elif|if|while|until|fi|done|esac|!)$/) return 1
     os_exp = 0
     if (b ~ /^(git|gh)$/) { os_git = 1; return 1 }
     if (b !~ /^(cat|echo|printf|true|false)$/) os_plain = 0
