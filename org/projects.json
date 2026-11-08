@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated": "2026-10-13",
+  "updated": "2026-11-08",
   "note": "Single project identity registry for Inbox routing, search and icons. Aliases are lowercase match terms; roots are exact absolute paths. A search alias never licenses a repo rename.",
   "projects": [
     {"slug": "mishmash", "name": "Mishmash", "icon": "mishmash", "accent": "#7C5CFF",
@@ -57,6 +57,15 @@
     {"slug": "pareidolia", "name": "Pareidolia", "icon": "pareidolia", "accent": "#F2B705",
      "aliases": ["pareidolia"],
      "roots": ["/Users/zero-suminc./projects/pareidolia"]},
+    {"slug": "zs-business", "name": "ZS Business", "icon": "zs-business", "accent": "#3B82F6",
+     "aliases": ["zs-business", "zs business", "zs-hub", "zs hub", "zs-hub-launch-readiness", "zs business connections"],
+     "roots": ["/Users/zero-suminc./projects/zs-business"]},
+    {"slug": "tally", "name": "Tally", "icon": "tally", "accent": "#10B981",
+     "aliases": ["tally", "tally-overnight"],
+     "roots": ["/Users/zero-suminc./projects/tally"]},
+    {"slug": "zs-agency-site", "name": "ZS Agency Site", "icon": "zs-agency-site", "accent": "#8B5CF6",
+     "aliases": ["zs-agency-site", "zs agency site", "agency site"],
+     "roots": ["/Users/zero-suminc./projects/zs-agency-site"]},
     {"slug": "_unassigned", "name": "Unassigned", "icon": "unassigned", "accent": "#A1A1AA",
      "aliases": [],
      "roots": []}
