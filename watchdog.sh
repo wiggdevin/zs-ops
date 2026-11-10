@@ -591,6 +591,8 @@ main() {
   if [ "${#unhealthy[@]}" -gt 0 ]; then
     local msg="memory stack unhealthy: ${unhealthy[*]}"
     bounded 10 osascript -e "display notification \"${msg//\"/\'}\" with title \"zs-watchdog\"" >/dev/null 2>&1 || true
+    # Slack #agent-alerts as the ZS Agents bot, at most hourly (sweeps repeat every few minutes).
+    [ -x "$HOME/bin/zs-slack" ] && bounded 20 "$HOME/bin/zs-slack" --key watchdog-unhealthy --every 3600 alerts "zs-watchdog: $msg" >/dev/null 2>&1 || true
     printf '\033[1;31m✗ %s\033[0m\n' "$msg" >&2
     # --report-only (how launchd invokes this) exits 0 here on purpose. A sweep
     # that ran correctly and FOUND problems is not a failed sweep, but launchd
