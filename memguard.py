@@ -402,6 +402,13 @@ def notify(msg):
                           % re.sub(r'["\\]', "'", msg)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError:
         pass
+    slack = os.path.expanduser("~/bin/zs-slack")
+    if os.access(slack, os.X_OK):  # Slack #agent-alerts, at most every 10 min
+        try:
+            subprocess.Popen([slack, "--key", "memguard", "--every", "600", "alerts", "zs-memguard: " + msg],
+                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except OSError:
+            pass
 
 
 def append_log(rec):

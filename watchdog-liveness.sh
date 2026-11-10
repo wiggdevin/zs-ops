@@ -108,6 +108,7 @@ fi
 detail="heartbeat $( [ "$age" -lt 0 ] && echo missing || echo "${age}s old" )"
 msg="zs-watchdog is NOT sweeping — $detail. Health monitoring is down."
 bounded 10 osascript -e "display notification \"$msg\" with title \"zs-watchdog LIVENESS\"" >/dev/null 2>&1 || true
+[ -x "$HOME/bin/zs-slack" ] && bounded 20 "$HOME/bin/zs-slack" --key watchdog-liveness --every 3600 alerts "$msg" >/dev/null 2>&1 || true
 printf '\033[1;31m✗ %s\033[0m\n' "$msg" >&2
 
 if [ "$LIVENESS_HEAL" != "1" ]; then
