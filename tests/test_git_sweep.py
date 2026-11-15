@@ -84,6 +84,7 @@ def test_pr_waits_for_a_second_sighting_of_the_same_head():
 def test_review_evidence():
     assert gs.has_review("- Review: GPT-6.1 Sol xhigh, no findings.")
     assert gs.has_review("## Review\n\nGPT-6.1 Sol and Gemini 4 Argon reviewed the branch.\n## Test plan\n")
+    assert gs.has_review("- Review: Gemini 4 Carbon high, no findings.")
     assert gs.has_review("**Cross-model review:** Claude Opus found nothing.")
     assert not gs.has_review("## Self-review\n- DeepSeek failed; Claude checked it.")
     assert not gs.has_review("## Review\nTODO\n## Notes\nSol was offline.")

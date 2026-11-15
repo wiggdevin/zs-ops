@@ -1038,7 +1038,7 @@ scan_command_string() {  # scan_command_string <string> <depth>
         for p in "${GIT_DESTRUCTIVE_PATTERNS[@]}"; do
           # an agent CLI is given a brief that may quote the merge command; it runs under its own guard
           case "$p" in
-            gh*merge*) case "$base" in codex|claude|agy|argon|kimi-k3|hermes|cursor-agent|grok|grok-subscription) continue ;; esac ;;
+            gh*merge*) case "$base" in codex|claude|agy|argon|carbon|kimi-k3|hermes|cursor-agent|grok|grok-subscription) continue ;; esac ;;
           esac
           if printf '%s' "$segtext" | grep -qE "$p"; then
             BLOCK_REASON="BLOCKED: '$COMMAND' matches git-destructive pattern '$p'.
