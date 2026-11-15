@@ -32,7 +32,7 @@ PRs (open, authored by the gh user, owners in OWNERS). One is squash-merged when
     new line blocks again). An unreadable or invalid config, or an unreadable policy
     file, blocks merging; the policy is read again right before the merge;
   - ready for review (not a draft) and its body records a review by another model
-    (a "Review" heading or line naming Sol, GPT, Argon, Gemini, Claude, Opus, Sonnet or
+    (a "Review" heading or line naming Sol, GPT, Carbon, Argon, Gemini, Claude, Opus, Sonnet or
     Codex, with no unticked box, "not reviewed", "pending" or open BLOCK in it;
     "Self-review" does not count). Base is the default branch, no hold label,
     no changes requested;
@@ -85,7 +85,7 @@ NO_MERGE_TEXT = re.compile(
     r"stop at (the|an open) pr|ends at open prs|leave .{0,20}prs? open", re.I)
 REVIEW_HEAD = re.compile(r"^\s*(#+\s*|[-*]\s*|\*\*)?(cross[- ]model |second[- ]model )?reviews?\b", re.I)
 SELF_REVIEW = re.compile(r"^\s*(#+\s*|[-*]\s*|\*\*)?self[- ]review", re.I)
-REVIEWER = re.compile(r"\b(sol|gpt|argon|gemini|claude|opus|sonnet|codex)\b", re.I)
+REVIEWER = re.compile(r"\b(sol|gpt|carbon|argon|gemini|claude|opus|sonnet|codex)\b", re.I)
 # A review section with any of these is unfinished or negative, so it does not count.
 REVIEW_OPEN = re.compile(
     r"\[ \]|\b(has|have|was|were|is|are)\s*(not|n't)\s+(yet\s+)?(been\s+)?(run|reviewed|reviewing|review)|"
