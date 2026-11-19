@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 """finder_views.py - make every controlled Inbox folder open as a list sorted newest first.
 
-Enumerates ~/Inbox, each type dir, notes/handoffs, each registered project dir and each
+Enumerates ~/Inbox, each type dir, handoffs/, each registered project dir and each
 YYYY-MM dir, then runs finder_views.applescript (Finder must be running; it opens and closes
 a window per folder). `--verify` re-opens each folder in a fresh window and reads the view and
 sort column back. Only touches Finder view state (.DS_Store), never files.
@@ -24,7 +24,7 @@ def folders():
     out = [ip.INBOX]
     slug_set = set(ip.slugs())
     tdirs = [ip.INBOX / t for t in ip.inbox_types()]
-    tdirs.append(ip.INBOX / "notes" / "handoffs")
+    tdirs.append(ip.type_dir("handoffs"))
     for t in tdirs:
         if not t.is_dir():
             continue

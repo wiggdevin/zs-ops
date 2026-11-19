@@ -60,8 +60,8 @@ with tempfile.TemporaryDirectory() as td:
     age_tree(live, 3 * 86400)
     touch(live / "deep/new.txt", age_s=20)
     # handoffs: recent stays flat, old gets filed
-    touch(root / "notes/handoffs/2026-10-12-sasha-recent.md", age_s=DAY // 2)
-    touch(root / "notes/handoffs/2026-09-01-sasha-old.md", age_s=40 * DAY)
+    touch(root / "handoffs/2026-10-12-sasha-recent.md", age_s=DAY // 2)
+    touch(root / "handoffs/2026-09-01-sasha-old.md", age_s=40 * DAY)
     # skip list
     touch(root / "misc/mish-team-packs-v2/x.txt")
     age_tree(root / "misc/mish-team-packs-v2", 3 * 86400)
@@ -73,7 +73,7 @@ with tempfile.TemporaryDirectory() as td:
     # already filed and admin
     touch(root / "plans/mishmash/2026-10/2026-10-07-mishh-filed.md")
     touch(root / "Potential Deletes/readme.txt")
-    touch(root / "notes/handoffs/mishmash/2026-09/h.md")
+    touch(root / "handoffs/mishmash/2026-09/h.md")
     # unresolved by alias
     touch(root / "notes/mystery-thing.txt")
     # undated name: month from mtime
@@ -100,7 +100,7 @@ with tempfile.TemporaryDirectory() as td:
     check("bundle with a fresh child skipped as recent", sk.get("live-bundle-sasha") == "recent", sk)
     check("recent handoff stays flat", sk.get("2026-10-12-sasha-recent.md") == "handoff-7d", sk)
     check("old handoff filed under handoffs/<project>/<month>",
-          mv["2026-09-01-sasha-old.md"]["dst"] == str(root / "notes/handoffs/sasha/2026-09/2026-09-01-sasha-old.md"),
+          mv["2026-09-01-sasha-old.md"]["dst"] == str(root / "handoffs/sasha/2026-09/2026-09-01-sasha-old.md"),
           mv.get("2026-09-01-sasha-old.md"))
     check("skip-list item skipped", sk.get("mish-team-packs-v2") == "skip-list")
     check("deferred run doc skipped", sk.get("2026-10-13-machine-org-design-sol.md") == "skip-list")
@@ -481,12 +481,12 @@ finally:
 # WARN 9: apply re-checks the 7-day handoff rule
 base, r = fresh_inbox("handoff-")
 try:
-    h = touch(r / "notes/handoffs/2026-10-12-sasha-live.md", age_s=DAY // 2)
-    res_h = rt.apply_rows([row_for(h, r / "notes/handoffs/sasha/2026-10/2026-10-12-sasha-live.md", type="handoffs")],
+    h = touch(r / "handoffs/2026-10-12-sasha-live.md", age_s=DAY // 2)
+    res_h = rt.apply_rows([row_for(h, r / "handoffs/sasha/2026-10/2026-10-12-sasha-live.md", type="handoffs")],
                           inbox=r)
     check("apply refuses a handoff younger than 1 day", res_h[0]["status"] == "skipped-handoff-7d" and h.exists(), res_h)
-    old = touch(r / "notes/handoffs/2026-09-01-sasha-old.md", age_s=40 * DAY)
-    res_h2 = rt.apply_rows([row_for(old, r / "notes/handoffs/sasha/2026-09/2026-09-01-sasha-old.md", type="handoffs")],
+    old = touch(r / "handoffs/2026-09-01-sasha-old.md", age_s=40 * DAY)
+    res_h2 = rt.apply_rows([row_for(old, r / "handoffs/sasha/2026-09/2026-09-01-sasha-old.md", type="handoffs")],
                            inbox=r)
     check("apply files an old handoff", res_h2[0]["status"] == "done")
 finally:

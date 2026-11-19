@@ -34,7 +34,7 @@ import org_archive  # noqa: E402
 
 HOME = Path.home()
 INBOX = HOME / "Inbox"
-TYPES = ["html", "plans", "pdfs", "screenshots", "notes", "misc", "notes/handoffs"]
+TYPES = ["html", "plans", "pdfs", "screenshots", "notes", "misc", "handoffs"]
 PD = INBOX / "Potential Deletes"
 STALE_DAYS = 30
 COOLDOWN_DAYS = 30
