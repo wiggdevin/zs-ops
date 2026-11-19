@@ -11,6 +11,8 @@ import org_router as rt
 SRC = ip.INBOX / "notes" / "handoffs"
 DST = ip.handoffs_dir()
 APPLY = "--apply" in sys.argv
+if SRC.is_symlink():  # already migrated: SRC is the compatibility link to DST
+    sys.exit("already migrated: %s is a symlink; nothing to do" % SRC)
 DATE_RES = [(re.compile(r"(20\d\d)-(\d\d)-(\d\d)"), "%Y-%m-%d"), (re.compile(r"(20\d\d)(\d\d)(\d\d)"), "%Y%m%d")]
 
 def find_date(name, mtime):
@@ -51,15 +53,22 @@ OVERRIDES = {
 }
 
 items = []  # (path, hint slug)
+def _only_months(d):
+    kids = [c for c in os.scandir(str(d)) if not ip.ignored(c.name)]
+    return bool(kids) and all(c.is_dir(follow_symlinks=False) and ip.MONTH_RE.match(c.name) for c in kids)
+
 def visit(d, hint):
     for e in sorted(os.scandir(str(d)), key=lambda e: e.name):
         if ip.ignored(e.name):
             continue
         p = Path(e.path)
+        if e.is_symlink():
+            print("skip symlink", p)
+            continue
         if e.is_dir(follow_symlinks=False):
             if ip.MONTH_RE.match(e.name):
                 visit(p, hint)
-            elif e.name in ip.slugs() or any(ip.MONTH_RE.match(c.name) for c in os.scandir(e.path) if c.is_dir()):
+            elif e.name in ip.slugs() or _only_months(p):  # container; anything else is a bundle
                 visit(p, e.name)
             else:
                 items.append((p, hint))  # bundle: moves whole
@@ -118,7 +127,16 @@ with man.open("w") as fh:
         fh.write(json.dumps({"op": "delete-empty", "src": str(e)}) + "\n")
     for r in rows:
         Path(r["dst"]).parent.mkdir(parents=True, exist_ok=True)
-        os.rename(r["src"], r["dst"])
+        dst, n = Path(r["dst"]), 2
+        while True:  # atomic: never replace a file another writer created after planning
+            try:
+                rt.rename_noreplace(r["src"], str(dst))
+                break
+            except FileExistsError:
+                b = Path(r["dst"])
+                dst = b.with_name("%s-%02d%s" % (b.stem, n, b.suffix)) if b.suffix else b.with_name("%s-%02d" % (b.name, n))
+                n += 1
+        r["dst"] = str(dst)
         os.utime(r["dst"], (r["mtime"], r["mtime"]))
         fh.write(json.dumps({"op": "move", "src": r["src"], "dst": r["dst"]}) + "\n")
 # remove now-empty dirs (only Icon\r / .DS_Store left)
