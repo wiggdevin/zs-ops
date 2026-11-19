@@ -14,7 +14,7 @@
      "roots": ["/Users/zero-suminc./projects/clients/broken-english"]},
     {"slug": "high-frequency", "code": "HIFQ", "name": "High Frequency", "icon": "high-frequency", "accent": "#00B3FF",
      "aliases": ["high frequency", "high-frequency", "highfrequency", "bt30", "hf"],
-     "roots": ["/Users/zero-suminc./projects/clients/high-frequency-app", "/Users/zero-suminc./projects/external/bt30-high-frequency-challenge"]},
+     "roots": ["/Users/zero-suminc./projects/clients/high-frequency-app", "/Users/zero-suminc./projects/clients/high-frequency-prototype", "/Users/zero-suminc./projects/external/bt30-high-frequency-challenge"]},
     {"slug": "posture-ai", "code": "POST", "name": "Posture AI", "icon": "posture-ai", "accent": "#FF7A45",
      "aliases": ["posture-ai", "posture ai", "posture"],
      "roots": ["/Users/zero-suminc./projects/posture-ai"]},
