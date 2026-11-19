@@ -8,6 +8,7 @@ sensitive/secret-looking; otherwise the name is used and no excerpt is read. Std
 """
 import datetime as _dt
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -72,5 +73,69 @@ def write_index(path=None, now=None):
     return path
 
 
+HANDOFF_ROOT_FILES = {"INDEX.md", "AGENTS.md", "START-HERE.md"}
+
+
+def build_handoffs_index(now=None):
+    """~/Inbox/handoffs/INDEX.md: every handoff newest first, one section per month."""
+    now = now or time.time()
+    reg = {p["slug"]: p for p in ip.load_registry()["projects"]}
+    root = ip.handoffs_dir()
+    items = [i for i in ip.find_items(type="handoffs", limit=0)
+             if not (Path(i["path"]).parent == root and i["name"] in HANDOFF_ROOT_FILES)]
+
+    def day_of(it):
+        m = re.match(r"(\d{4}-\d{2}-\d{2})", it["name"])
+        return m.group(1) if m else _dt.datetime.fromtimestamp(it["mtime"]).strftime("%Y-%m-%d")
+
+    items.sort(key=lambda i: (day_of(i), i["mtime"]), reverse=True)
+    counts = {}
+    for it in items:
+        counts[it["project"]] = counts.get(it["project"], 0) + 1
+    lines = ["# Handoffs index", "",
+             "Generated %s. %d handoffs, newest first. Rules: [AGENTS.md](AGENTS.md). "
+             "Rebuild: `~/bin/handoff-index`." % (_dt.datetime.fromtimestamp(now).strftime("%Y-%m-%d %H:%M"), len(items)),
+             "", "## Latest per project", "", "| Code | Project | Latest | Count |", "|---|---|---|---|"]
+    seen = set()
+    for it in items:
+        slug = it["project"]
+        if slug in seen:
+            continue
+        seen.add(slug)
+        rel = quote(os.path.relpath(it["path"], str(root)))
+        lines.append("| %s | %s | [%s](%s) | %d |" % (reg.get(slug, {}).get("code", "") or "-",
+                     reg.get(slug, {}).get("name", slug), day_of(it), rel, counts[slug]))
+    month = None
+    for it in items:
+        m = day_of(it)[:7]
+        if m != month:
+            month = m
+            lines += ["", "## %s" % _dt.datetime.strptime(m, "%Y-%m").strftime("%B %Y"), "",
+                      "| Date | Code | Handoff |", "|---|---|---|"]
+        title, _desc = describe(it)
+        title = title.replace("|", "/").replace("[", "(").replace("]", ")")
+        rel = quote(os.path.relpath(it["path"], str(root)))
+        code = reg.get(it["project"], {}).get("code", "") or it["project"]
+        lines.append("| %s | %s | [%s](%s) |" % (day_of(it), code, title, rel))
+    lines.append("")
+    return "\n".join(lines)
+
+
+def write_handoffs_index(path=None, now=None):
+    root = ip.handoffs_dir()
+    if not root.is_dir():
+        return None
+    path = Path(path or (root / "INDEX.md"))
+    text = build_handoffs_index(now)
+    tmp = str(path) + ".tmp"
+    Path(tmp).write_text(text)
+    os.replace(tmp, str(path))
+    return path
+
+
 if __name__ == "__main__":
-    print(write_index())
+    if "--handoffs" in sys.argv[1:]:
+        print(write_handoffs_index())
+    else:
+        print(write_index())
+        print(write_handoffs_index())

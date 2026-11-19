@@ -5,12 +5,12 @@
     org_router.py apply --manifest F [--max N]
     org_router.py undo  --manifest F
 
-Target layout: <Inbox>/<type>/<project>/<YYYY-MM>/<name>   (notes/handoffs likewise).
+Target layout: <Inbox>/<type>/<project>/<YYYY-MM>/<name>   (handoffs/ likewise).
 Rules (spec decisions 2, 3, 6, 7):
   - Each top-level file or directory bundle moves whole. Never enter .git; a bundle that
     contains .git is routed whole and flagged has_git. Symlinks are skipped.
   - Items modified in the last 10 minutes (newest mtime inside a bundle) are skipped.
-  - notes/handoffs items modified in the last day stay flat.
+  - handoffs/ items modified in the last day stay flat.
   - Registered project dirs, month dirs and admin dirs are left alone.
   - Project: alias match on the name, then on a markdown title, then Jev (closed slug set
     + _unassigned, accept p >= 0.85). Jev sees names and <=300 chars of a title/README
@@ -587,7 +587,7 @@ def collect_inbox_candidates(now, skip_extra=None, defer_last=True, include_rece
     counts = {"filed": 0}
     inbox_in_git = _inside_git(inbox)
     scan = [(t, inbox / t, False) for t in ip.inbox_types()]
-    scan.append(("handoffs", inbox / "notes" / "handoffs", True))
+    scan.append(("handoffs", ip.type_dir("handoffs"), True))
     for tname, tdir, is_handoff in scan:
         if not tdir.is_dir():
             continue
@@ -681,7 +681,7 @@ def resolve_rows(rows, use_jev=True, cache_path=None, evaluate=None, log=None):
         if not month:
             month, r["month_basis"] = month_of(r["mtime"]), "mtime"
         r["month"] = month
-        tdir = inbox / "notes" / "handoffs" if r["type"] == "handoffs" else inbox / r["type"]
+        tdir = ip.type_dir("handoffs") if r["type"] == "handoffs" else inbox / r["type"]
         r["dst"] = str(tdir / r["project"] / month / r["name"])
     return rows
 

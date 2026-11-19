@@ -96,8 +96,8 @@ with tempfile.TemporaryDirectory() as td:
     touch(bundle / "evidence/1.png")
     touch(bundle / "README.md", text="# Sasha QA\n")
     age_tree(bundle, 4 * DAY)
-    touch(inbox / "notes/handoffs/2026-10-12-sasha-recent.md", age_s=DAY // 2)
-    touch(inbox / "notes/handoffs/2026-09-20-sasha-old.md", age_s=20 * DAY)
+    touch(inbox / "handoffs/2026-10-12-sasha-recent.md", age_s=DAY // 2)
+    touch(inbox / "handoffs/2026-09-20-sasha-old.md", age_s=20 * DAY)
     touch(inbox / "notes/2026-10-12-spindle-just-now.md", age_s=60)
 
     lines, warnings, summary = m.run(use_jev=False, do_ingest=False, do_screens=False, do_cold=False,
@@ -115,8 +115,8 @@ with tempfile.TemporaryDirectory() as td:
           and (home / "Downloads/video.crdownload").exists() and (home / "Downloads/spindle.html.part").exists())
     check("bundle moved as one unit", any((inbox / "notes/sasha").glob("*/qa-run-sasha-2026-10-08/evidence/1.png")))
     check("recent inbox item skipped", (inbox / "notes/2026-10-12-spindle-just-now.md").exists())
-    check("recent handoff stays flat", (inbox / "notes/handoffs/2026-10-12-sasha-recent.md").exists())
-    check("old handoff filed", any((inbox / "notes/handoffs/sasha").glob("*/2026-09-20-sasha-old.md")))
+    check("recent handoff stays flat", (inbox / "handoffs/2026-10-12-sasha-recent.md").exists())
+    check("old handoff filed", any((inbox / "handoffs/sasha").glob("*/2026-09-20-sasha-old.md")))
     mf = list(m.MANIFEST_DIR.glob("*-sweep.jsonl"))
     check("plan manifest written before the moves", len(mf) == 1
           and any(r.get("op") == "move" and "status" not in r for r in rt.read_manifest(mf[0])))
@@ -135,7 +135,7 @@ with tempfile.TemporaryDirectory() as td:
     res = rt.undo_rows([r for r in rows if r.get("status") == "done"], alias_state=m.STATE_DIR / "desktop-aliases.json",
                        inbox=inbox, allow_src_roots=[m.DESKTOP, m.DOWNLOADS])
     check("manifest undo restores originals", (home / "Downloads/spindle-brief.pdf").exists()
-          and (inbox / "notes/handoffs/2026-09-20-sasha-old.md").exists()
+          and (inbox / "handoffs/2026-09-20-sasha-old.md").exists()
           and all(r["undo"] == "restored" for r in res), [r["undo"] for r in res])
 
     # ---- legacy aliases (made before 2026-10-18) still expire through the tracked state
@@ -230,7 +230,7 @@ with tempfile.TemporaryDirectory() as td:
     touch(mixed / "sub/new.md", age_s=2 * DAY)                      # newest child keeps bundle warm
     touch(inbox / "notes/sasha/2026-08/pinned-note.md", age_s=60 * DAY)
     touch(inbox / "notes/sasha/2026-08/Broken English NDA.pdf", age_s=60 * DAY)
-    touch(inbox / "notes/handoffs/spindle/2026-08/2026-08-01-spindle-only.md", age_s=60 * DAY)
+    touch(inbox / "handoffs/spindle/2026-08/2026-08-01-spindle-only.md", age_s=60 * DAY)
     touch(inbox / "notes/sasha/2026-08/Posture AI Legal Review Packet/readme.md", age_s=60 * DAY)
     age_tree(inbox / "notes/sasha/2026-08/Posture AI Legal Review Packet", 60 * DAY)
     touch(inbox / ".pinned", text="pinned-note.md\n")

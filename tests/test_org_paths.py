@@ -31,6 +31,8 @@ check("weak alias still routes alone", ip.resolve_project("design-toolbox-audit"
 check("spaces and case", ip.resolve_project("High Frequency INFO") == "high-frequency")
 check("unknown", ip.resolve_project("random vacation photos") == "_unassigned")
 check("empty", ip.resolve_project("") == "_unassigned")
+check("project code as first token", ip.resolve_project("2026-11-18-SASH-tester-launch.md") == "sasha")
+check("project code later in the name does not match", ip.resolve_project("notes-sash-x") == "_unassigned")
 
 # ---- allocate
 with tempfile.TemporaryDirectory() as td:
@@ -64,7 +66,12 @@ with tempfile.TemporaryDirectory() as td:
     [t.join() for t in ts]
     check("parallel allocations get distinct names", len({str(x) for x in results}) == 8, results)
     h = ip.allocate("sasha", "handoffs", "init prompt", ext="md", date=d)
-    check("handoffs maps to notes/handoffs", "/notes/handoffs/sasha/2026-10/" in str(h), h)
+    check("handoffs live at <Inbox>/handoffs with the project code",
+          str(h) == str(ip.INBOX / "handoffs/sasha/2026-10/2026-10-13-SASH-init-prompt.md"), h)
+    h2 = ip.allocate("sasha", "handoffs", "sasha tester launch", ext="md", date=d)
+    check("handoff subject drops a repeated project word", h2.name == "2026-10-13-SASH-tester-launch.md", h2.name)
+    hu = ip.allocate("who knows", "handoffs", "loose", ext="md", date=d)
+    check("unassigned handoff has no code", hu.name == "2026-10-13-loose.md", hu.name)
     u = ip.allocate("who knows", "misc", "thing", ext="txt", date=d)
     check("unknown project -> _unassigned, name has no slug", "/misc/_unassigned/2026-10/2026-10-13-thing.txt" in str(u), u)
     b = ip.allocate("sasha", "notes", "Onboarding review", bundle=True, date=d)
@@ -96,20 +103,20 @@ with tempfile.TemporaryDirectory() as td:
     newer = ip.allocate("sasha", "notes", "fresh audit", ext="md", date=d)
     newer.write_text("new")
     os.utime(newer, (1_800_000_000, 1_800_000_000))
-    flat_ho = root / "notes" / "handoffs" / "2026-10-12-sasha-live.md"
+    flat_ho = root / "handoffs" / "2026-10-12-sasha-live.md"
     flat_ho.parent.mkdir(parents=True, exist_ok=True)
     flat_ho.write_text("live")
     os.utime(flat_ho, (1_790_000_000, 1_790_000_000))
     other = root / "plans" / "2026-10-02-spindle-plan.md"
     other.write_text("p")
-    got = ip.find(project="sasha", limit=20)
+    got = ip.find(project="sasha", limit=50)
     mt = [os.stat(str(g)).st_mtime for g in got]
     check("find is sorted newest first", mt == sorted(mt, reverse=True))
     check("find spans new layout, flat handoff and legacy flat", newer in got and flat_ho in got and legacy in got)
     check("fresh before live before legacy", got.index(newer) < got.index(flat_ho) < got.index(legacy))
     check("find excludes other projects", other not in got)
     found_h = ip.find(type="handoffs", project="sasha")
-    check("find type=handoffs", flat_ho in found_h and h in found_h and len(found_h) == 2, found_h)
+    check("find type=handoffs", flat_ho in found_h and h in found_h and h2 in found_h and len(found_h) == 3, found_h)
     check("find query", ip.find(query="old audit") == [legacy])
     check("find latest limit", len(ip.find(project="sasha", limit=1)) == 1)
     for d_ in (root / "notes", root / "notes/sasha", root / "notes/sasha/2026-10"):

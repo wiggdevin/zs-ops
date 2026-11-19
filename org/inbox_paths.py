@@ -3,7 +3,9 @@
 
 Layout (spec: ~/.config/zs-ops/org/EXECUTION-SPEC.md):
     ~/Inbox/<type>/<project>/<YYYY-MM>/<YYYY-MM-DD>-<project>-<subject>[.ext]
-    types: html plans pdfs screenshots notes misc; "handoffs" maps to notes/handoffs.
+    types: html plans pdfs screenshots notes misc.
+    Handoffs: ~/Inbox/handoffs/<project>/<YYYY-MM>/<YYYY-MM-DD>-<CODE>-<subject>.md, where CODE
+    is the project's 3-4 letter "code" in the registry (MISH, SASH, BENG ...).
 
 Python:
     from inbox_paths import resolve_project, allocate, find, find_items
@@ -67,6 +69,20 @@ def inbox_types():
     return list(load_registry().get("inbox_types") or DEFAULT_TYPES)
 
 
+def project_code(slug):
+    """Upper-case 3-4 letter code for a project slug ("" when the registry has none)."""
+    for p in load_registry()["projects"]:
+        if p["slug"] == slug:
+            return str(p.get("code") or "").upper()
+    return ""
+
+
+def handoffs_dir():
+    """Root of the handoff shelf (registry virtual_types.handoffs, default "handoffs")."""
+    rel = (load_registry().get("virtual_types") or {}).get("handoffs") or "handoffs"
+    return INBOX / rel
+
+
 def admin_names():
     return set(load_registry().get("inbox_admin") or [])
 
@@ -101,11 +117,17 @@ def _alias_index():
             norm = _norm(alias)
             if norm and norm not in seen:
                 seen[norm] = slug
+    anchored = set()  # project codes count only as the first token, like short aliases
+    for proj in reg["projects"]:
+        code = _norm(proj.get("code") or "")
+        if code and proj["slug"] != UNASSIGNED and code not in seen:
+            seen[code] = proj["slug"]
+            anchored.add(code)
     weak = {_norm(a) for a in reg.get("weak_aliases", [])}
     out = []
     for norm, slug in seen.items():
         rx = re.compile(r"(?<![a-z0-9])" + re.escape(norm) + r"(?![a-z0-9])")
-        out.append((norm, slug, rx, norm in weak))
+        out.append((norm, slug, rx, norm in weak, norm in anchored))
     out.sort(key=lambda t: (-len(t[0]), t[0]))
     _alias_index_cache.clear()
     _alias_index_cache[key] = out
@@ -129,11 +151,11 @@ def resolve_project(text):
     if not norm:
         return UNASSIGNED
     best = None  # (strong, anchored, len, -pos, slug): strong beats weak, a leading match beats a later one
-    for alias, slug, rx, is_weak in _alias_index():
+    for alias, slug, rx, is_weak, is_code in _alias_index():
         m = rx.search(norm)
         if not m:
             continue
-        if len(alias) <= SHORT_ALIAS_LEN and m.start() != 0:
+        if (len(alias) <= SHORT_ALIAS_LEN or is_code) and m.start() != 0:
             continue
         cand = (0 if is_weak else 1, 1 if m.start() == 0 else 0, len(alias), -m.start(), slug)
         if best is None or cand > best:
@@ -165,7 +187,7 @@ def _as_date(value):
 def type_dir(type_name):
     t = str(type_name).strip().lower()
     if t == "handoffs":
-        return INBOX / "notes" / "handoffs"
+        return handoffs_dir()
     if t not in inbox_types():
         raise ValueError("unknown inbox type %r (use %s or handoffs)" % (type_name, ", ".join(inbox_types())))
     return INBOX / t
@@ -175,7 +197,8 @@ def allocate(project, type, subject, ext=None, bundle=False, date=None):
     """Return an absolute collision-free Path and create its parent directory.
 
     <Inbox>/<type>/<slug>/<YYYY-MM>/<YYYY-MM-DD>-<slug>-<subject>[.ext]; for the
-    "_unassigned" project the slug is left out of the name. A bundle is a directory:
+    "_unassigned" project the slug is left out of the name. Handoffs use the project code
+    instead of the slug: <Inbox>/handoffs/<slug>/<YYYY-MM>/<YYYY-MM-DD>-<CODE>-<subject>. A bundle is a directory:
     it is created (atomic mkdir) so the name stays reserved. A file is created empty with
     O_CREAT|O_EXCL for the same reason; the caller then overwrites it. Same-day collisions
     get -02, -03 ...
@@ -185,7 +208,15 @@ def allocate(project, type, subject, ext=None, bundle=False, date=None):
     base = type_dir(type) / slug / day.strftime("%Y-%m")
     subj = slugify(subject)
     parts = [day.isoformat()]
-    if slug != UNASSIGNED and not (subj == slug or subj.startswith(slug + "-")):
+    code = project_code(slug) if str(type).strip().lower() == "handoffs" else ""
+    if code:
+        for dup in (code.lower(), slug):  # drop a repeated project word from the subject
+            if subj == dup:
+                subj = "session"
+            elif subj.startswith(dup + "-"):
+                subj = subj[len(dup) + 1:]
+        parts.append(code)
+    elif slug != UNASSIGNED and not (subj == slug or subj.startswith(slug + "-")):
         parts.append(slug)
     parts.append(subj)
     stem = "-".join(parts)

@@ -411,7 +411,7 @@ def cold_candidates(now: float):
     scan = []
     for t in ip.inbox_types():
         scan.append((t, INBOX / t))
-    scan.append(("handoffs", INBOX / "notes" / "handoffs"))
+    scan.append(("handoffs", ip.type_dir("handoffs")))
     for tname, tdir in scan:
         if not tdir.is_dir():
             continue
@@ -749,6 +749,7 @@ def run(dry=False, use_jev=True, do_ingest=True, do_screens=True, do_cold=True, 
         try:
             import inbox_index  # noqa: E402  (org/ is on sys.path)
             lines.append(f"{stamp} index -> {inbox_index.write_index()}")
+            lines.append(f"{stamp} handoffs index -> {inbox_index.write_handoffs_index()}")
         except Exception as exc:  # the index is a convenience; never fail the sweep over it
             warnings.append(f"index not written: {type(exc).__name__}")
     return lines, warnings, summary
