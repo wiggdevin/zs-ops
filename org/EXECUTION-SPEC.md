@@ -8,11 +8,11 @@ The new engine is live: launchd com.zs.inbox-sweep runs inbox_sweep.py daily at 
 
 ## Driver decisions that override or simplify the Sol design
 1. Inbox layout = Sol's: `~/Inbox/<type>/<project>/<YYYY-MM>/<item>`; handoffs =
-   `~/Inbox/notes/handoffs/<project>/<YYYY-MM>/<item>`. Types: html plans pdfs screenshots
+   `~/Inbox/handoffs/<project>/<YYYY-MM>/<item>` (moved from notes/handoffs 2026-11-18). Types: html plans pdfs screenshots
    notes misc. Admin at Inbox L1: `Potential Deletes/`, `_views/`, `_shortcuts/`, `_archive/`.
    `_unassigned` is the project for unknowns.
 2. Bundles (directories) move as one unit. Never descend into a bundle; never route its children.
-3. Handoffs modified in the last day stay flat in `notes/handoffs/` (live resume paths); the
+3. Handoffs modified in the last day stay flat in `handoffs/` (live resume paths); the
    daily job files them once they are >1 day old (was 7 days; shortened 2026-10-13 at Devin's
    request to leave no flat leftovers). Readers search recursively.
 4. Desktop: exactly `Projects` alias, `Inbox` alias, plus the Devin Search desktop bar
