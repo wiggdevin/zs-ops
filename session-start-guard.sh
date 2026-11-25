@@ -15,7 +15,10 @@
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail
 
-MEMORY_API="${MEMORY_API:-http://127.0.0.1:8765}"
+# Explicit MEMORY_API wins; else ~/bin/zs-memory-url (URL file, loopback when absent).
+MEMORY_API="${MEMORY_API:-$("$HOME/bin/zs-memory-url" 2>/dev/null || echo http://127.0.0.1:8765)}"
+MEMORY_REMOTE=1
+case "$MEMORY_API" in http://127.0.0.1:*|http://localhost:*|"http://[::1]:"*) MEMORY_REMOTE=0 ;; esac
 OLLAMA_API="${OLLAMA_API:-http://localhost:11434}"
 
 offline=0
@@ -28,7 +31,11 @@ http_ok() { curl -fsS --max-time "${2:-8}" "$1" >/dev/null 2>&1; }
 
 echo "── memory stack pre-flight ──"
 
-if http_ok "$MEMORY_API/health"; then ok "zs-memory :8765"
+if [ "$MEMORY_REMOTE" = 1 ]; then
+  # Remote host (the Studio): short budget so an offline laptop does not stall the session.
+  if http_ok "$MEMORY_API/health" 5; then ok "zs-memory $MEMORY_API"
+  else bad "zs-memory $MEMORY_API unreachable (check Tailscale; the service runs on that host)"; fi
+elif http_ok "$MEMORY_API/health"; then ok "zs-memory :8765"
 else bad "zs-memory :8765 (launchctl kickstart -k gui/\$(id -u)/com.zs.memory)"; fi
 if http_ok "$OLLAMA_API/api/tags"; then ok "ollama :11434 compatibility embeddings"
 else bad "ollama :11434 embeddings (open -g -j -a Ollama; Ollama.app owns the server)"; fi

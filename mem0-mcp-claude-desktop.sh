@@ -11,12 +11,12 @@ set -euo pipefail
 # bypasses scope checks entirely and can target any user_id including
 # delete_all_memories — no interactive client should hold it.
 if [ -z "${ZS_MEMORY_TOKEN:-}" ]; then
-  ZS_MEMORY_TOKEN="$(/Users/zero-suminc./bin/zsvault get zs_memory_token_claude)"
+  ZS_MEMORY_TOKEN="$("$HOME/bin/zsvault" get zs_memory_token_claude)"
 fi
 export ZS_MEMORY_TOKEN
 
-BASE_URL="http://127.0.0.1:8765"
-[ -s "$HOME/.config/zs-memory/url" ] && BASE_URL="$(tr -d '[:space:]' < "$HOME/.config/zs-memory/url")"
-exec "$HOME/.local/share/mise/shims/npx" -y mcp-remote "${BASE_URL%/}/mcp" \
+# Server URL from ~/bin/zs-memory-url (reads ~/.config/zs-memory/url; loopback when absent).
+BASE_URL="$("$HOME/bin/zs-memory-url")" || exit 1
+exec "$HOME/.local/share/mise/shims/npx" -y mcp-remote "${BASE_URL}/mcp" \
   --header 'Authorization: Bearer ${ZS_MEMORY_TOKEN}' \
   --header "X-Client-Name: claude-desktop"

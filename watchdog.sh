@@ -18,19 +18,24 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WATCHDOG_LOG="${WATCHDOG_LOG:-$HOME/Library/Logs/zs-watchdog.jsonl}"
-MEMORY_API="${MEMORY_API:-http://127.0.0.1:8765}"
-# When ~/.config/zs-memory/url names another machine (the Mac Studio since
-# 2026-11-24), this Mac is only a client: check that host's /health, never
-# restart anything, and leave backup and dream checks to the host's own watchdog.
-ZS_MEMORY_REMOTE=0
-ZS_MEMORY_URL_FILE="${ZS_MEMORY_URL_FILE:-$HOME/.config/zs-memory/url}"
-if [ -s "$ZS_MEMORY_URL_FILE" ]; then
-  _zsm_url="$(tr -d '[:space:]' < "$ZS_MEMORY_URL_FILE")"
-  case "$_zsm_url" in
-    ""|http://127.0.0.1:*|http://localhost:*) ;;
-    *) MEMORY_API="${_zsm_url%/}"; ZS_MEMORY_REMOTE=1 ;;
-  esac
+# Memory URL: an explicit MEMORY_API wins (tests set it); otherwise ~/bin/zs-memory-url
+# (reads ~/.config/zs-memory/url, loopback when absent). When the effective URL names
+# another machine (the Mac Studio since 2026-11-24), this Mac is only a client: check
+# that host's /health, never restart anything, and leave backup and dream checks to
+# the host's own watchdog.
+ZS_MEMORY_URL_CMD="${ZS_MEMORY_URL_CMD:-$HOME/bin/zs-memory-url}"
+if [ -z "${MEMORY_API:-}" ]; then
+  MEMORY_API="http://127.0.0.1:8765"
+  if [ -x "$ZS_MEMORY_URL_CMD" ]; then
+    # An invalid URL file (plain-http remote) is reported as unreachable, never as loopback.
+    MEMORY_API="$("$ZS_MEMORY_URL_CMD" 2>/dev/null)" || MEMORY_API="invalid://zs-memory-url-file"
+  fi
 fi
+MEMORY_API="${MEMORY_API%/}"
+case "$MEMORY_API" in
+  http://127.0.0.1:*|http://localhost:*|"http://[::1]:"*) ZS_MEMORY_REMOTE=0 ;;
+  *) ZS_MEMORY_REMOTE=1 ;;
+esac
 OLLAMA_API="${OLLAMA_API:-http://localhost:11434}"
 BACKUP_DIR="${BACKUP_DIR:-$HOME/Backups/zs-mem0-backups}"
 # iCloud mirror written by zs-memory/ops/backup-zs-memory.sh (default since 2026-07-09)

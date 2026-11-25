@@ -112,6 +112,16 @@ n=$(kickstarts)
 [ "$n" -eq 0 ] && pass "recovery/clears-counter" || fail "recovery/clears-counter" 0 "$n"
 stop_server
 
+# ── 6: a remote host (client mode) never kickstarts, even after repeated failures ─
+reset_state
+run_check "https://127.0.0.1:1"         # remote-style URL, nothing listening
+run_check "https://127.0.0.1:1"
+run_check "https://127.0.0.1:1"
+n=$(kickstarts)
+[ "$n" -eq 0 ] && pass "remote/no-kickstart" || fail "remote/no-kickstart" 0 "$n"
+grep -q 'remote-host-no-restart' "$TMP_DIR/events.jsonl" && pass "remote/event" \
+  || fail "remote/event" remote-host-no-restart "$(last_status)"
+
 rm -rf "$TMP_DIR"
 [ "$fails" -eq 0 ] && { echo "--- all watchdog zs-memory tests passed ---"; exit 0; }
 echo "--- $fails failed ---"; exit 1
