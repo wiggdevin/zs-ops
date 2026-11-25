@@ -18,7 +18,24 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WATCHDOG_LOG="${WATCHDOG_LOG:-$HOME/Library/Logs/zs-watchdog.jsonl}"
-MEMORY_API="${MEMORY_API:-http://127.0.0.1:8765}"
+# Memory URL: an explicit MEMORY_API wins (tests set it); otherwise ~/bin/zs-memory-url
+# (reads ~/.config/zs-memory/url, loopback when absent). When the effective URL names
+# another machine (the Mac Studio since 2026-11-24), this Mac is only a client: check
+# that host's /health, never restart anything, and leave backup and dream checks to
+# the host's own watchdog.
+ZS_MEMORY_URL_CMD="${ZS_MEMORY_URL_CMD:-$HOME/bin/zs-memory-url}"
+if [ -z "${MEMORY_API:-}" ]; then
+  MEMORY_API="http://127.0.0.1:8765"
+  if [ -x "$ZS_MEMORY_URL_CMD" ]; then
+    # An invalid URL file (plain-http remote) is reported as unreachable, never as loopback.
+    MEMORY_API="$("$ZS_MEMORY_URL_CMD" 2>/dev/null)" || MEMORY_API="invalid://zs-memory-url-file"
+  fi
+fi
+MEMORY_API="${MEMORY_API%/}"
+case "$MEMORY_API" in
+  http://127.0.0.1:*|http://localhost:*|"http://[::1]:"*) ZS_MEMORY_REMOTE=0 ;;
+  *) ZS_MEMORY_REMOTE=1 ;;
+esac
 OLLAMA_API="${OLLAMA_API:-http://localhost:11434}"
 BACKUP_DIR="${BACKUP_DIR:-$HOME/Backups/zs-mem0-backups}"
 # iCloud mirror written by zs-memory/ops/backup-zs-memory.sh (default since 2026-07-09)
@@ -222,10 +239,17 @@ ZS_MEMORY_FAIL_THRESHOLD="${ZS_MEMORY_FAIL_THRESHOLD:-2}"
 # probe (5s). The old 5s left zero margin and timed out on a healthy service.
 ZS_MEMORY_HEALTH_TIMEOUT="${ZS_MEMORY_HEALTH_TIMEOUT:-8}"
 
+# Client mode (remote MEMORY_API): this Mac cannot heal the host, and a laptop on
+# the road loses the tailnet often. Keep a separate counter, log quietly, and
+# raise the alarm only after ZS_MEMORY_REMOTE_FAIL_THRESHOLD consecutive sweeps.
+ZS_MEMORY_REMOTE_FAIL_STATE="${ZS_MEMORY_REMOTE_FAIL_STATE:-$HOME/Library/Logs/zs-watchdog-zs-memory-remote-fails}"
+ZS_MEMORY_REMOTE_FAIL_THRESHOLD="${ZS_MEMORY_REMOTE_FAIL_THRESHOLD:-3}"
+
 check_zs_memory() {
-  local body
+  local body fail_state="$ZS_MEMORY_FAIL_STATE"
+  [ "$ZS_MEMORY_REMOTE" -eq 1 ] && fail_state="$ZS_MEMORY_REMOTE_FAIL_STATE"
   if body="$(curl -fsS --max-time "$ZS_MEMORY_HEALTH_TIMEOUT" "$MEMORY_API/health" 2>/dev/null)"; then
-    rm -f "$ZS_MEMORY_FAIL_STATE"
+    rm -f "$fail_state"
     case "$body" in
       *degraded*) event zs-memory degraded no-restart ;;
       *)          event zs-memory healthy none ;;
@@ -234,9 +258,18 @@ check_zs_memory() {
   fi
 
   local n
-  n=$(( $(cat "$ZS_MEMORY_FAIL_STATE" 2>/dev/null || echo 0) + 1 ))
-  mkdir -p "$(dirname "$ZS_MEMORY_FAIL_STATE")" 2>/dev/null
-  printf '%s' "$n" > "$ZS_MEMORY_FAIL_STATE"
+  n=$(( $(cat "$fail_state" 2>/dev/null || echo 0) + 1 ))
+  mkdir -p "$(dirname "$fail_state")" 2>/dev/null
+  printf '%s' "$n" > "$fail_state"
+  if [ "$ZS_MEMORY_REMOTE" -eq 1 ]; then
+    local remote_host="${MEMORY_API#*://}"; remote_host="${remote_host%%/*}"
+    if [ "$n" -lt "$ZS_MEMORY_REMOTE_FAIL_THRESHOLD" ]; then
+      log_event zs-memory unreachable "remote $remote_host no-restart $n-of-$ZS_MEMORY_REMOTE_FAIL_THRESHOLD"
+    else
+      event "zs-memory@$remote_host" unreachable "remote $remote_host down for $n sweeps (heal on the host)"
+    fi
+    return
+  fi
   if [ "$n" -lt "$ZS_MEMORY_FAIL_THRESHOLD" ]; then
     event zs-memory unreachable "no-restart-yet-$n-of-$ZS_MEMORY_FAIL_THRESHOLD"
     return
@@ -549,9 +582,11 @@ main() {
   check_memguard
   check_zs_memory
   check_ollama
-  check_backup_freshness
-  check_mirror_freshness
-  check_dream
+  if [ "$ZS_MEMORY_REMOTE" -eq 0 ]; then
+    check_backup_freshness
+    check_mirror_freshness
+    check_dream
+  fi
   check_liveness_monitor
   check_scheduled_jobs
 

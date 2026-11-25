@@ -66,12 +66,14 @@ run_check() {
     export LAUNCHCTL_CALLS="$TMP_DIR/launchctl.calls"
     export MEMORY_API="$1"
     export ZS_MEMORY_FAIL_STATE="$TMP_DIR/failcount"
+    export ZS_MEMORY_REMOTE_FAIL_STATE="$TMP_DIR/remote-failcount"
     source "$WD" >/dev/null 2>&1
     check_zs_memory
+    printf '%s\n' "${#unhealthy[@]}" > "$TMP_DIR/alarms"
   )
 }
 
-reset_state() { : > "$TMP_DIR/events.jsonl"; : > "$TMP_DIR/launchctl.calls"; rm -f "$TMP_DIR/failcount"; }
+reset_state() { : > "$TMP_DIR/events.jsonl"; : > "$TMP_DIR/launchctl.calls"; rm -f "$TMP_DIR/failcount" "$TMP_DIR/remote-failcount"; }
 kickstarts() { grep -c 'kickstart' "$TMP_DIR/launchctl.calls" 2>/dev/null || true; }
 last_status() { tail -1 "$TMP_DIR/events.jsonl" 2>/dev/null; }
 
@@ -111,6 +113,24 @@ run_check "http://127.0.0.1:1"          # fail 1 again, must not restart
 n=$(kickstarts)
 [ "$n" -eq 0 ] && pass "recovery/clears-counter" || fail "recovery/clears-counter" 0 "$n"
 stop_server
+
+# ── 6: a remote host (client mode) never kickstarts, even after repeated failures ─
+reset_state
+run_check "https://127.0.0.1:1"         # remote-style URL, nothing listening
+run_check "https://127.0.0.1:1"
+a=$(cat "$TMP_DIR/alarms")
+[ "$a" -eq 0 ] && pass "remote/quiet-below-threshold" || fail "remote/quiet-below-threshold" 0 "$a"
+[ -f "$TMP_DIR/failcount" ] && fail "remote/separate-counter" "no local counter" "local counter written" \
+  || pass "remote/separate-counter"
+run_check "https://127.0.0.1:1"
+a=$(cat "$TMP_DIR/alarms")
+[ "$a" -ge 1 ] && pass "remote/alarm-at-threshold" || fail "remote/alarm-at-threshold" ">=1" "$a"
+n=$(kickstarts)
+[ "$n" -eq 0 ] && pass "remote/no-kickstart" || fail "remote/no-kickstart" 0 "$n"
+grep -q 'remote 127.0.0.1:1 down for 3 sweeps' "$TMP_DIR/events.jsonl" && pass "remote/event-names-host" \
+  || fail "remote/event-names-host" "remote 127.0.0.1:1 down" "$(last_status)"
+grep -q '"component":"zs-memory@127.0.0.1:1"' "$TMP_DIR/events.jsonl" && pass "remote/alarm-component-names-host" \
+  || fail "remote/alarm-component-names-host" "zs-memory@127.0.0.1:1" "$(last_status)"
 
 rm -rf "$TMP_DIR"
 [ "$fails" -eq 0 ] && { echo "--- all watchdog zs-memory tests passed ---"; exit 0; }

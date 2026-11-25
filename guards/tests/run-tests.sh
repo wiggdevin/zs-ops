@@ -231,6 +231,7 @@ for lane in claude codex cursor antigravity hermes; do
   run_case "$lane" git-override-other-command block "$(payload_for "$lane" 'ZS_ALLOW_GIT=1 true; git reset --hard')"
   run_case "$lane" git-override-same-command allow "$(payload_for "$lane" 'ZS_ALLOW_GIT=1 git clean -df')"
   run_case "$lane" rm-home-braces block "$(payload_for "$lane" 'rm -rf ${HOME}')"
+  run_case "$lane" rm-real-home-literal block "$(payload_for "$lane" "rm -rf $HOME")"   # any Mac, not only the laptop home
   run_case "$lane" rm-etc block "$(payload_for "$lane" 'rm -rf /etc')"
   run_case "$lane" find-home-delete block "$(payload_for "$lane" 'find ~ -delete')"
   run_case "$lane" terraform-chdir-parent allow "$(payload_for "$lane" 'terraform -chdir ../ plan')"
