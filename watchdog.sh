@@ -19,6 +19,18 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WATCHDOG_LOG="${WATCHDOG_LOG:-$HOME/Library/Logs/zs-watchdog.jsonl}"
 MEMORY_API="${MEMORY_API:-http://127.0.0.1:8765}"
+# When ~/.config/zs-memory/url names another machine (the Mac Studio since
+# 2026-11-24), this Mac is only a client: check that host's /health, never
+# restart anything, and leave backup and dream checks to the host's own watchdog.
+ZS_MEMORY_REMOTE=0
+ZS_MEMORY_URL_FILE="${ZS_MEMORY_URL_FILE:-$HOME/.config/zs-memory/url}"
+if [ -s "$ZS_MEMORY_URL_FILE" ]; then
+  _zsm_url="$(tr -d '[:space:]' < "$ZS_MEMORY_URL_FILE")"
+  case "$_zsm_url" in
+    ""|http://127.0.0.1:*|http://localhost:*) ;;
+    *) MEMORY_API="${_zsm_url%/}"; ZS_MEMORY_REMOTE=1 ;;
+  esac
+fi
 OLLAMA_API="${OLLAMA_API:-http://localhost:11434}"
 BACKUP_DIR="${BACKUP_DIR:-$HOME/Backups/zs-mem0-backups}"
 # iCloud mirror written by zs-memory/ops/backup-zs-memory.sh (default since 2026-07-09)
@@ -237,6 +249,10 @@ check_zs_memory() {
   n=$(( $(cat "$ZS_MEMORY_FAIL_STATE" 2>/dev/null || echo 0) + 1 ))
   mkdir -p "$(dirname "$ZS_MEMORY_FAIL_STATE")" 2>/dev/null
   printf '%s' "$n" > "$ZS_MEMORY_FAIL_STATE"
+  if [ "$ZS_MEMORY_REMOTE" -eq 1 ]; then
+    event zs-memory unreachable "remote-host-no-restart-$n"
+    return
+  fi
   if [ "$n" -lt "$ZS_MEMORY_FAIL_THRESHOLD" ]; then
     event zs-memory unreachable "no-restart-yet-$n-of-$ZS_MEMORY_FAIL_THRESHOLD"
     return
@@ -549,9 +565,11 @@ main() {
   check_memguard
   check_zs_memory
   check_ollama
-  check_backup_freshness
-  check_mirror_freshness
-  check_dream
+  if [ "$ZS_MEMORY_REMOTE" -eq 0 ]; then
+    check_backup_freshness
+    check_mirror_freshness
+    check_dream
+  fi
   check_liveness_monitor
   check_scheduled_jobs
 
