@@ -160,16 +160,19 @@ def memory_section():
     token = os.environ.get("ZS_MEMORY_TOKEN") or run(
         [f"{HOME}/bin/zsvault", "get", "zs_memory_token_automation"])
     total = "?"
-    if token:
+    base = run([f"{HOME}/bin/zs-memory-url"], timeout=5)
+    if not base:
+        total, base = "invalid URL file", "~/.config/zs-memory/url"
+    elif token:
         try:
             req = urllib.request.Request(
-                "http://127.0.0.1:8765/api/v1/memories/?user_id=zero-fleet&size=1&page=1",
+                f"{base}/api/v1/memories/?user_id=zero-fleet&size=1&page=1",
                 headers={"Authorization": f"Bearer {token}"})
             with urllib.request.urlopen(req, timeout=10) as resp:
                 total = json.loads(resp.read()).get("total", "?")
         except Exception:
             total = "unreachable"
-    lines.append(f"- store: {total} memories (user_id=zero-fleet, 127.0.0.1:8765)")
+    lines.append(f"- store: {total} memories (user_id=zero-fleet, {base})")
     digests = latest_dream_digests()
     lines.append(f"- latest dream digest: {digests[-1] if digests else 'none yet'}")
     db_dir = f"{HOME}/.local/share/zs-memory"

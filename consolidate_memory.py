@@ -18,7 +18,16 @@ Stdlib only (no deps). Talks to the mem0 REST API. DRY-RUN by default.
 import os, re, sys, json, urllib.request, urllib.parse
 from difflib import SequenceMatcher
 
-API = os.environ.get("MEM0_API", "http://127.0.0.1:8765")
+def _default_api():
+    import subprocess
+    try:
+        return subprocess.run([os.path.expanduser("~/bin/zs-memory-url")], capture_output=True,
+                              text=True, check=True, timeout=5).stdout.strip()
+    except (OSError, subprocess.SubprocessError) as e:
+        sys.exit(f"zs-memory-url failed: {e}")
+
+
+API = os.environ.get("MEM0_API") or _default_api()
 USER_ID = os.environ.get("USER_ID", "zero-fleet")
 PRUNE_CODE = "--prune-code" in sys.argv
 

@@ -239,10 +239,17 @@ ZS_MEMORY_FAIL_THRESHOLD="${ZS_MEMORY_FAIL_THRESHOLD:-2}"
 # probe (5s). The old 5s left zero margin and timed out on a healthy service.
 ZS_MEMORY_HEALTH_TIMEOUT="${ZS_MEMORY_HEALTH_TIMEOUT:-8}"
 
+# Client mode (remote MEMORY_API): this Mac cannot heal the host, and a laptop on
+# the road loses the tailnet often. Keep a separate counter, log quietly, and
+# raise the alarm only after ZS_MEMORY_REMOTE_FAIL_THRESHOLD consecutive sweeps.
+ZS_MEMORY_REMOTE_FAIL_STATE="${ZS_MEMORY_REMOTE_FAIL_STATE:-$HOME/Library/Logs/zs-watchdog-zs-memory-remote-fails}"
+ZS_MEMORY_REMOTE_FAIL_THRESHOLD="${ZS_MEMORY_REMOTE_FAIL_THRESHOLD:-3}"
+
 check_zs_memory() {
-  local body
+  local body fail_state="$ZS_MEMORY_FAIL_STATE"
+  [ "$ZS_MEMORY_REMOTE" -eq 1 ] && fail_state="$ZS_MEMORY_REMOTE_FAIL_STATE"
   if body="$(curl -fsS --max-time "$ZS_MEMORY_HEALTH_TIMEOUT" "$MEMORY_API/health" 2>/dev/null)"; then
-    rm -f "$ZS_MEMORY_FAIL_STATE"
+    rm -f "$fail_state"
     case "$body" in
       *degraded*) event zs-memory degraded no-restart ;;
       *)          event zs-memory healthy none ;;
@@ -251,11 +258,16 @@ check_zs_memory() {
   fi
 
   local n
-  n=$(( $(cat "$ZS_MEMORY_FAIL_STATE" 2>/dev/null || echo 0) + 1 ))
-  mkdir -p "$(dirname "$ZS_MEMORY_FAIL_STATE")" 2>/dev/null
-  printf '%s' "$n" > "$ZS_MEMORY_FAIL_STATE"
+  n=$(( $(cat "$fail_state" 2>/dev/null || echo 0) + 1 ))
+  mkdir -p "$(dirname "$fail_state")" 2>/dev/null
+  printf '%s' "$n" > "$fail_state"
   if [ "$ZS_MEMORY_REMOTE" -eq 1 ]; then
-    event zs-memory unreachable "remote-host-no-restart-$n"
+    local remote_host="${MEMORY_API#*://}"; remote_host="${remote_host%%/*}"
+    if [ "$n" -lt "$ZS_MEMORY_REMOTE_FAIL_THRESHOLD" ]; then
+      log_event zs-memory unreachable "remote $remote_host no-restart $n-of-$ZS_MEMORY_REMOTE_FAIL_THRESHOLD"
+    else
+      event zs-memory unreachable "remote $remote_host down for $n sweeps (heal on the host)"
+    fi
     return
   fi
   if [ "$n" -lt "$ZS_MEMORY_FAIL_THRESHOLD" ]; then
