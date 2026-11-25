@@ -146,7 +146,9 @@ SECRET_PATH_ALT="(^|[^[:alnum:]_.-])${SECRET_DIR_NB}|${SECRET_REST_NB}"
 # Catastrophic rm / find -delete: root, home (~, $HOME, ${HOME}, the real home), the
 # parent dir and the system trees. Suffixes /  /*  /.  /.* match too. The command word
 # needs a boundary, so `terraform -chdir ../ plan` is not an rm (2026-10-27).
-RM_TARGET="(/|~|\\\$HOME|\\\$\\{HOME\\}|/Users/zero-suminc\\.|\\.\\.|/Users|/etc|/System|/Library|/Applications)"
+# The real home comes from $HOME, escaped for ERE, so the guard works on every Mac.
+REAL_HOME_RE="$(printf '%s' "${HOME:-/Users/zero-suminc.}" | sed 's/[].[^$*+?(){}|\\]/\\&/g')"
+RM_TARGET="(/|~|\\\$HOME|\\\$\\{HOME\\}|${REAL_HOME_RE}|\\.\\.|/Users|/etc|/System|/Library|/Applications)"
 RM_SUFFIX="/*(\\.\\*?|\\*)?/*"
 RM_PATTERN="(^|[^[:alnum:]_.-])rm([[:space:]]+-[-a-zA-Z]*)+([[:space:]]+[^[:space:];&|()]+)*[[:space:]]+[\"']?${RM_TARGET}[\"']?${RM_SUFFIX}[\"']?(\$|[[:space:];&|)])"
 FIND_DELETE_PATTERN="(^|[^[:alnum:]_.-])find[[:space:]]+[\"']?${RM_TARGET}[\"']?${RM_SUFFIX}[\"']?[[:space:]]+(-(depth|xdev|mindepth|maxdepth)([[:space:]]+[0-9]+)?[[:space:]]+)*-delete"
