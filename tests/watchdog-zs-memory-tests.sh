@@ -129,6 +129,8 @@ n=$(kickstarts)
 [ "$n" -eq 0 ] && pass "remote/no-kickstart" || fail "remote/no-kickstart" 0 "$n"
 grep -q 'remote 127.0.0.1:1 down for 3 sweeps' "$TMP_DIR/events.jsonl" && pass "remote/event-names-host" \
   || fail "remote/event-names-host" "remote 127.0.0.1:1 down" "$(last_status)"
+grep -q '"component":"zs-memory@127.0.0.1:1"' "$TMP_DIR/events.jsonl" && pass "remote/alarm-component-names-host" \
+  || fail "remote/alarm-component-names-host" "zs-memory@127.0.0.1:1" "$(last_status)"
 
 rm -rf "$TMP_DIR"
 [ "$fails" -eq 0 ] && { echo "--- all watchdog zs-memory tests passed ---"; exit 0; }

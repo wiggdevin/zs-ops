@@ -25,6 +25,15 @@ import urllib.request
 from datetime import datetime, timezone
 from glob import glob
 
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect: it would carry the bearer token to another host."""
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
 HOME = os.path.expanduser("~")
 OUT = os.path.join(HOME, "MACHINE.md")
 PROJECTS = os.path.join(HOME, "projects")
@@ -168,7 +177,7 @@ def memory_section():
             req = urllib.request.Request(
                 f"{base}/api/v1/memories/?user_id=zero-fleet&size=1&page=1",
                 headers={"Authorization": f"Bearer {token}"})
-            with urllib.request.urlopen(req, timeout=10) as resp:
+            with _OPENER.open(req, timeout=10) as resp:
                 total = json.loads(resp.read()).get("total", "?")
         except Exception:
             total = "unreachable"

@@ -18,6 +18,15 @@ Stdlib only (no deps). Talks to the mem0 REST API. DRY-RUN by default.
 import os, re, sys, json, urllib.request, urllib.parse
 from difflib import SequenceMatcher
 
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Never follow a redirect: it would carry the bearer token to another host."""
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+_OPENER = urllib.request.build_opener(_NoRedirect)
+
 def _default_api():
     import subprocess
     try:
@@ -85,7 +94,7 @@ def _req(method, path, body=None):
     if TOKEN:
         headers["Authorization"] = f"Bearer {TOKEN}"
     r = urllib.request.Request(url, data=data, method=method, headers=headers)
-    with urllib.request.urlopen(r, timeout=30) as resp:
+    with _OPENER.open(r, timeout=30) as resp:
         return json.loads(resp.read() or "{}")
 
 

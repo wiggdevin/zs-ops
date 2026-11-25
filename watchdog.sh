@@ -266,7 +266,7 @@ check_zs_memory() {
     if [ "$n" -lt "$ZS_MEMORY_REMOTE_FAIL_THRESHOLD" ]; then
       log_event zs-memory unreachable "remote $remote_host no-restart $n-of-$ZS_MEMORY_REMOTE_FAIL_THRESHOLD"
     else
-      event zs-memory unreachable "remote $remote_host down for $n sweeps (heal on the host)"
+      event "zs-memory@$remote_host" unreachable "remote $remote_host down for $n sweeps (heal on the host)"
     fi
     return
   fi

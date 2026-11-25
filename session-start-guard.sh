@@ -32,8 +32,9 @@ http_ok() { curl -fsS --max-time "${2:-8}" "$1" >/dev/null 2>&1; }
 echo "── memory stack pre-flight ──"
 
 if [ "$MEMORY_REMOTE" = 1 ]; then
-  # Remote host (the Studio): short budget so an offline laptop does not stall the session.
-  if http_ok "$MEMORY_API/health" 5; then ok "zs-memory $MEMORY_API"
+  # Remote host (the Studio): same 8 s budget as loopback (/health can take ~6 s); an
+  # offline laptop waits at most that long at session start.
+  if http_ok "$MEMORY_API/health" 8; then ok "zs-memory $MEMORY_API"
   else bad "zs-memory $MEMORY_API unreachable (check Tailscale; the service runs on that host)"; fi
 elif http_ok "$MEMORY_API/health"; then ok "zs-memory :8765"
 else bad "zs-memory :8765 (launchctl kickstart -k gui/\$(id -u)/com.zs.memory)"; fi
